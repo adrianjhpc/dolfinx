@@ -4,6 +4,8 @@
 //
 // SPDX-License-Identifier:    LGPL-3.0-or-later
 
+#ifdef HAS_PETSC
+
 #include "NewtonSolver.h"
 #include <dolfinx/common/MPI.h>
 #include <dolfinx/common/log.h>
@@ -33,10 +35,10 @@ std::pair<double, bool> converged(const nls::petsc::NewtonSolver& solver,
   // Output iteration number and residual
   if (solver.report and dolfinx::MPI::rank(solver.comm()) == 0)
   {
-    LOG(INFO) << "Newton iteration " << solver.iteration()
-              << ": r (abs) = " << residual << " (tol = " << solver.atol
-              << ") r (rel) = " << relative_residual << "(tol = " << solver.rtol
-              << ")";
+    spdlog::info("Newton iteration {}"
+                 ": r (abs) = {} (tol = {}), r (rel) = {} (tol = {})",
+                 solver.iteration(), residual, solver.atol, relative_residual,
+                 solver.rtol);
   }
 
   // Return true if convergence criterion is met
@@ -73,9 +75,6 @@ nls::petsc::NewtonSolver::NewtonSolver(MPI_Comm comm)
   _solver.set_options_prefix("nls_solve_");
   la::petsc::options::set("nls_solve_ksp_type", "preonly");
   la::petsc::options::set("nls_solve_pc_type", "lu");
-#if PETSC_HAVE_MUMPS
-  la::petsc::options::set("nls_solve_pc_factor_mat_solver_type", "mumps");
-#endif
   _solver.set_from_options();
 }
 //-----------------------------------------------------------------------------
@@ -91,24 +90,24 @@ nls::petsc::NewtonSolver::~NewtonSolver()
     MatDestroy(&_matP);
 }
 //-----------------------------------------------------------------------------
-void nls::petsc::NewtonSolver::setF(
-    const std::function<void(const Vec, Vec)>& F, Vec b)
+void nls::petsc::NewtonSolver::setF(std::function<void(const Vec, Vec)> F,
+                                    Vec b)
 {
   _fnF = F;
   _b = b;
   PetscObjectReference((PetscObject)_b);
 }
 //-----------------------------------------------------------------------------
-void nls::petsc::NewtonSolver::setJ(
-    const std::function<void(const Vec, Mat)>& J, Mat Jmat)
+void nls::petsc::NewtonSolver::setJ(std::function<void(const Vec, Mat)> J,
+                                    Mat Jmat)
 {
   _fnJ = J;
   _matJ = Jmat;
   PetscObjectReference((PetscObject)_matJ);
 }
 //-----------------------------------------------------------------------------
-void nls::petsc::NewtonSolver::setP(
-    const std::function<void(const Vec, Mat)>& P, Mat Pmat)
+void nls::petsc::NewtonSolver::setP(std::function<void(const Vec, Mat)> P,
+                                    Mat Pmat)
 {
   _fnP = P;
   _matP = Pmat;
@@ -126,21 +125,19 @@ la::petsc::KrylovSolver& nls::petsc::NewtonSolver::get_krylov_solver()
   return _solver;
 }
 //-----------------------------------------------------------------------------
-void nls::petsc::NewtonSolver::set_form(const std::function<void(Vec)>& form)
+void nls::petsc::NewtonSolver::set_form(std::function<void(Vec)> form)
 {
   _system = form;
 }
 //-----------------------------------------------------------------------------
 void nls::petsc::NewtonSolver::set_convergence_check(
-    const std::function<std::pair<double, bool>(const NewtonSolver&,
-                                                const Vec)>& c)
+    std::function<std::pair<double, bool>(const NewtonSolver&, const Vec)> c)
 {
   _converged = c;
 }
 //-----------------------------------------------------------------------------
 void nls::petsc::NewtonSolver::set_update(
-    const std::function<void(const NewtonSolver& solver, const Vec, Vec)>&
-        update)
+    std::function<void(const NewtonSolver& solver, const Vec, Vec)> update)
 {
   _update_solution = update;
 }
@@ -160,7 +157,7 @@ std::pair<int, bool> nls::petsc::NewtonSolver::solve(Vec x)
 
   if (!_fnJ)
   {
-    throw std::runtime_error("Function for computing Jacobianhas not "
+    throw std::runtime_error("Function for computing Jacobian has not "
                              "been provided to the NewtonSolver.");
   }
 
@@ -252,9 +249,9 @@ std::pair<int, bool> nls::petsc::NewtonSolver::solve(Vec x)
   {
     if (dolfinx::MPI::rank(_comm.comm()) == 0)
     {
-      LOG(INFO) << "Newton solver finished in " << _iteration
-                << " iterations and " << _krylov_iterations
-                << " linear solver iterations.";
+      spdlog::info("Newton solver finished in {} iterations and {} linear "
+                   "solver iterations.",
+                   _iteration, _krylov_iterations);
     }
   }
   else
@@ -270,7 +267,7 @@ std::pair<int, bool> nls::petsc::NewtonSolver::solve(Vec x)
         throw std::runtime_error("Newton solver did not converge");
     }
     else
-      LOG(WARNING) << "Newton solver did not converge.";
+      spdlog::warn("Newton solver did not converge.");
   }
 
   return {_iteration, newton_converged};
@@ -289,3 +286,4 @@ double nls::petsc::NewtonSolver::residual0() const { return _residual0; }
 //-----------------------------------------------------------------------------
 MPI_Comm nls::petsc::NewtonSolver::comm() const { return _comm.comm(); }
 //-----------------------------------------------------------------------------
+#endif

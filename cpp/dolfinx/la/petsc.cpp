@@ -5,6 +5,8 @@
 //
 // SPDX-License-Identifier:    LGPL-3.0-or-later
 
+#ifdef HAS_PETSC
+
 #include "petsc.h"
 #include "SparsityPattern.h"
 #include "Vector.h"
@@ -36,9 +38,9 @@ void la::petsc::error(int error_code, std::string filename,
   PetscErrorMessage(error_code, &desc, nullptr);
 
   // Log detailed error info
-  DLOG(INFO) << "PETSc error in '" << filename.c_str() << "', '"
-             << petsc_function.c_str() << "'";
-  DLOG(INFO) << "PETSc error code '" << error_code << "' (" << desc << ".";
+  spdlog::info("PETSc error in '{}', '{}'", filename.c_str(),
+               petsc_function.c_str());
+  spdlog::info("PETSc error code '{}' '{}'", error_code, desc);
   throw std::runtime_error("Failed to successfully call PETSc function '"
                            + petsc_function + "'. PETSc error code is: "
                            + std ::to_string(error_code) + ", "
@@ -75,15 +77,24 @@ Vec la::petsc::create_vector(MPI_Comm comm, std::array<std::int64_t, 2> range,
 
   // Get local size
   assert(range[1] >= range[0]);
-  const std::int32_t local_size = range[1] - range[0];
+  std::int32_t local_size = range[1] - range[0];
 
-  Vec x;
-  const std::vector<PetscInt> _ghosts(ghosts.begin(), ghosts.end());
-  ierr = VecCreateGhostBlock(comm, bs, bs * local_size, PETSC_DETERMINE,
-                             _ghosts.size(), _ghosts.data(), &x);
-  CHECK_ERROR("VecCreateGhostBlock");
+  Vec x = nullptr;
+  std::vector<PetscInt> _ghosts(ghosts.begin(), ghosts.end());
+  if (bs == 1)
+  {
+    ierr = VecCreateGhost(comm, local_size, PETSC_DETERMINE, _ghosts.size(),
+                          _ghosts.data(), &x);
+    CHECK_ERROR("VecCreateGhost");
+  }
+  else
+  {
+    ierr = VecCreateGhostBlock(comm, bs, bs * local_size, PETSC_DETERMINE,
+                               _ghosts.size(), _ghosts.data(), &x);
+    CHECK_ERROR("VecCreateGhostBlock");
+  }
+
   assert(x);
-
   return x;
 }
 //-----------------------------------------------------------------------------
@@ -94,8 +105,23 @@ Vec la::petsc::create_vector_wrap(const common::IndexMap& map, int bs,
   const std::int64_t size_global = bs * map.size_global();
   const std::vector<PetscInt> ghosts(map.ghosts().begin(), map.ghosts().end());
   Vec vec;
-  VecCreateGhostBlockWithArray(map.comm(), bs, size_local, size_global,
-                               ghosts.size(), ghosts.data(), x.data(), &vec);
+  PetscErrorCode ierr;
+  if (bs == 1)
+  {
+    ierr
+        = VecCreateGhostWithArray(map.comm(), size_local, size_global,
+                                  ghosts.size(), ghosts.data(), x.data(), &vec);
+    CHECK_ERROR("VecCreateGhostWithArray");
+  }
+  else
+  {
+    ierr = VecCreateGhostBlockWithArray(map.comm(), bs, size_local, size_global,
+                                        ghosts.size(), ghosts.data(), x.data(),
+                                        &vec);
+    CHECK_ERROR("VecCreateGhostBlockWithArray");
+  }
+
+  assert(vec);
   return vec;
 }
 //-----------------------------------------------------------------------------
@@ -107,8 +133,8 @@ std::vector<IS> la::petsc::create_index_sets(
   std::int64_t offset = 0;
   for (auto& map : maps)
   {
-    const int bs = map.second;
-    const std::int32_t size
+    int bs = map.second;
+    std::int32_t size
         = map.first.get().size_local() + map.first.get().num_ghosts();
     IS _is;
     ISCreateStride(PETSC_COMM_SELF, bs * size, offset, 1, &_is);
@@ -206,7 +232,7 @@ void la::petsc::scatter_local_vectors(
 }
 //-----------------------------------------------------------------------------
 Mat la::petsc::create_matrix(MPI_Comm comm, const SparsityPattern& sp,
-                             const std::string& type)
+                             std::string type)
 {
   PetscErrorCode ierr;
   Mat A;
@@ -368,7 +394,6 @@ void petsc::options::clear()
 }
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-//-----------------------------------------------------------------------------
 petsc::Vector::Vector(const common::IndexMap& map, int bs)
     : _x(la::petsc::create_vector(map, bs))
 {
@@ -524,8 +549,9 @@ Vec petsc::Operator::create_vector(std::size_t dim) const
   }
   else
   {
-    LOG(ERROR) << "Cannot initialize PETSc vector to match PETSc matrix. "
-               << "Dimension must be 0 or 1, not " << dim;
+    spdlog::error("Cannot initialize PETSc vector to match PETSc matrix. "
+                  "Dimension must be 0 or 1, not {}",
+                  dim);
     throw std::runtime_error("Invalid dimension");
   }
 
@@ -536,7 +562,7 @@ Mat petsc::Operator::mat() const { return _matA; }
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 petsc::Matrix::Matrix(MPI_Comm comm, const SparsityPattern& sp,
-                      const std::string& type)
+                      std::string type)
     : Operator(petsc::create_matrix(comm, sp, type), false)
 {
   // Do nothing
@@ -551,7 +577,7 @@ double petsc::Matrix::norm(Norm norm_type) const
 {
   assert(_matA);
   PetscErrorCode ierr;
-  double value = 0.0;
+  PetscReal value = 0;
   switch (norm_type)
   {
   case Norm::l1:
@@ -672,7 +698,7 @@ int petsc::KrylovSolver::solve(Vec x, const Vec b, bool transpose) const
   PetscErrorCode ierr;
 
   // Solve linear system
-  LOG(INFO) << "PETSc Krylov solver starting to solve system.";
+  spdlog::info("PETSc Krylov solver starting to solve system.");
 
   // Solve system
   if (!transpose)
@@ -686,18 +712,6 @@ int petsc::KrylovSolver::solve(Vec x, const Vec b, bool transpose) const
     ierr = KSPSolveTranspose(_ksp, b, x);
     if (ierr != 0)
       petsc::error(ierr, __FILE__, "KSPSolve");
-  }
-
-  // FIXME: Remove ghost updating?
-  // Update ghost values in solution vector
-  Vec xg;
-  VecGhostGetLocalForm(x, &xg);
-  const bool is_ghosted = xg ? true : false;
-  VecGhostRestoreLocalForm(x, &xg);
-  if (is_ghosted)
-  {
-    VecGhostUpdateBegin(x, INSERT_VALUES, SCATTER_FORWARD);
-    VecGhostUpdateEnd(x, INSERT_VALUES, SCATTER_FORWARD);
   }
 
   // Get the number of iterations
@@ -777,3 +791,5 @@ void petsc::KrylovSolver::set_from_options() const
 //-----------------------------------------------------------------------------
 KSP petsc::KrylovSolver::ksp() const { return _ksp; }
 //-----------------------------------------------------------------------------
+
+#endif

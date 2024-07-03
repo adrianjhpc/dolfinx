@@ -4,16 +4,18 @@
 #
 # SPDX-License-Identifier:    LGPL-3.0-or-later
 """Unit tests for the FunctionSpace class"""
+
+from mpi4py import MPI
+
 import numpy as np
 import pytest
 
-import basix.finite_element
-from dolfinx.fem import Function, FunctionSpace, VectorFunctionSpace
+import basix
+from basix.ufl import element, mixed_element
+from dolfinx import default_real_type
+from dolfinx.fem import Function, FunctionSpace, functionspace
 from dolfinx.mesh import create_mesh, create_unit_cube
-from ufl import (Cell, FiniteElement, Mesh, TestFunction, TrialFunction,
-                 VectorElement, grad, triangle)
-
-from mpi4py import MPI
+from ufl import Cell, Mesh, TestFunction, TrialFunction, grad
 
 
 @pytest.fixture
@@ -23,19 +25,22 @@ def mesh():
 
 @pytest.fixture
 def V(mesh):
-    return FunctionSpace(mesh, ('Lagrange', 1))
+    return functionspace(mesh, ("Lagrange", 1))
 
 
 @pytest.fixture
 def W(mesh):
-    return VectorFunctionSpace(mesh, ('Lagrange', 1))
+    gdim = mesh.geometry.dim
+    return functionspace(mesh, ("Lagrange", 1, (gdim,)))
 
 
 @pytest.fixture
 def Q(mesh):
-    W = VectorElement('Lagrange', mesh.ufl_cell(), 1)
-    V = FiniteElement('Lagrange', mesh.ufl_cell(), 1)
-    return FunctionSpace(mesh, W * V)
+    W = element(
+        "Lagrange", mesh.basix_cell(), 1, shape=(mesh.geometry.dim,), dtype=default_real_type
+    )
+    V = element("Lagrange", mesh.basix_cell(), 1, dtype=default_real_type)
+    return functionspace(mesh, mixed_element([W, V]))
 
 
 @pytest.fixture
@@ -59,7 +64,7 @@ def W2(g):
 
 
 def test_python_interface(V, V2, W, W2, Q):
-    # Test Python interface of cpp generated FunctionSpace
+    # Test Python interface of cpp generated functionspace
     assert isinstance(V, FunctionSpace)
     assert isinstance(W, FunctionSpace)
     assert isinstance(V2, FunctionSpace)
@@ -87,7 +92,7 @@ def test_component(V, W, Q):
 def test_equality(V, V2, W, W2):
     assert V == V  # /NOSONAR
     assert V == V2
-    assert W == W
+    assert W == W  # /NOSONAR
     assert W == W2
 
 
@@ -97,21 +102,27 @@ def test_sub(Q, W):
     assert W.dofmap.dof_layout.num_dofs == X.dofmap.dof_layout.num_dofs
     for dim, entity_count in enumerate([4, 6, 4, 1]):
         assert W.dofmap.dof_layout.num_entity_dofs(dim) == X.dofmap.dof_layout.num_entity_dofs(dim)
-        assert W.dofmap.dof_layout.num_entity_closure_dofs(dim) == X.dofmap.dof_layout.num_entity_closure_dofs(dim)
+        assert W.dofmap.dof_layout.num_entity_closure_dofs(
+            dim
+        ) == X.dofmap.dof_layout.num_entity_closure_dofs(dim)
         for i in range(entity_count):
-            assert len(W.dofmap.dof_layout.entity_dofs(dim, i)) \
-                == len(X.dofmap.dof_layout.entity_dofs(dim, i)) \
+            assert (
+                len(W.dofmap.dof_layout.entity_dofs(dim, i))
+                == len(X.dofmap.dof_layout.entity_dofs(dim, i))
                 == len(X.dofmap.dof_layout.entity_dofs(dim, 0))
-            assert len(W.dofmap.dof_layout.entity_closure_dofs(dim, i)) \
-                == len(X.dofmap.dof_layout.entity_closure_dofs(dim, i)) \
+            )
+            assert (
+                len(W.dofmap.dof_layout.entity_closure_dofs(dim, i))
+                == len(X.dofmap.dof_layout.entity_closure_dofs(dim, i))
                 == len(X.dofmap.dof_layout.entity_closure_dofs(dim, 0))
+            )
 
     assert W.dofmap.dof_layout.block_size == X.dofmap.dof_layout.block_size
     assert W.dofmap.bs * len(W.dofmap.cell_dofs(0)) == len(X.dofmap.cell_dofs(0))
 
     assert W.element.num_sub_elements == X.element.num_sub_elements
     assert W.element.space_dimension == X.element.space_dimension
-    assert W.element.value_shape == X.element.value_shape
+    assert W.value_shape == X.value_shape
     assert W.element.interpolation_points().shape == X.element.interpolation_points().shape
     assert W.element == X.element
 
@@ -155,25 +166,37 @@ def test_clone(W):
 
 
 def test_collapse(W, V):
-    Vs = W.sub(2)
     with pytest.raises(RuntimeError):
-        Function(Vs)
-    assert Vs.dofmap.cell_dofs(0)[0] != V.dofmap.cell_dofs(0)[0]
+        Function(W.sub(1))
 
-    # Collapse the space it should now be the same as V
-    Vc = Vs.collapse()[0]
-    assert Vc.dofmap.cell_dofs(0)[0] == V.dofmap.cell_dofs(0)[0]
-    f0 = Function(V)
-    f1 = Function(Vc)
-    assert f0.vector.getSize() == f1.vector.getSize()
+    Ws = [W.sub(i).collapse() for i in range(W.num_sub_spaces)]
+    for Wi, _ in Ws:
+        assert np.allclose(Wi.dofmap.index_map.ghosts, W.dofmap.index_map.ghosts)
+
+    msh = W.mesh
+    cell_imap = msh.topology.index_map(msh.topology.dim)
+    num_cells = cell_imap.size_local + cell_imap.num_ghosts
+    bs = W.dofmap.index_map_bs
+    for c in range(num_cells):
+        cell_dofs = W.dofmap.cell_dofs(c)
+        for i, dof in enumerate(cell_dofs):
+            for k in range(bs):
+                new_dof = Ws[k][0].dofmap.cell_dofs(c)[i]
+                new_to_old = Ws[k][1]
+                assert dof * bs + k == new_to_old[new_dof]
+
+    f0 = Function(Ws[0][0])
+    f1 = Function(V)
+    assert f0.x.index_map.size_global == f1.x.index_map.size_global
 
 
 def test_argument_equality(mesh, V, V2, W, W2):
     """Placed this test here because it's mainly about detecting differing
     function spaces"""
     mesh2 = create_unit_cube(MPI.COMM_WORLD, 8, 8, 8)
-    V3 = FunctionSpace(mesh2, ("Lagrange", 1))
-    W3 = VectorFunctionSpace(mesh2, ("Lagrange", 1))
+    gdim = mesh2.geometry.dim
+    V3 = functionspace(mesh2, ("Lagrange", 1))
+    W3 = functionspace(mesh2, ("Lagrange", 1, (gdim,)))
 
     for TF in (TestFunction, TrialFunction):
         v = TF(V)
@@ -219,15 +242,18 @@ def test_argument_equality(mesh, V, V2, W, W2):
 
 def test_cell_mismatch(mesh):
     """Test that cell mismatch raises early enough from UFL"""
-    element = FiniteElement("P", triangle, 1)
+    e = element("P", "triangle", 1, dtype=default_real_type)
     with pytest.raises(BaseException):
-        FunctionSpace(mesh, element)
+        functionspace(mesh, e)
 
 
+@pytest.mark.skipif(default_real_type != np.float64, reason="float32 not supported yet")
 def test_basix_element(V, W, Q, V2):
     for V_ in (V, W, V2):
         e = V_.element.basix_element
-        assert isinstance(e, basix.finite_element.FiniteElement)
+        assert isinstance(
+            e, (basix._basixcpp.FiniteElement_float64, basix._basixcpp.FiniteElement_float32)
+        )
 
     # Mixed spaces do not yet return a basix element
     with pytest.raises(RuntimeError):
@@ -242,13 +268,30 @@ def test_vector_function_space_cell_type():
     gdim = 2
 
     # Create a mesh containing a single interval living in 2D
-    cell = Cell("interval", geometric_dimension=gdim)
-    domain = Mesh(VectorElement("Lagrange", cell, 1))
+    cell = Cell("interval")
+    domain = Mesh(element("Lagrange", "interval", 1, shape=(1,), dtype=default_real_type))
     cells = np.array([[0, 1]], dtype=np.int64)
-    x = np.array([[0., 0.], [1., 1.]])
+    x = np.array([[0.0, 0.0], [1.0, 1.0]])
     mesh = create_mesh(comm, cells, x, domain)
 
     # Create functions space over mesh, and check element cell
     # is correct
-    V = VectorFunctionSpace(mesh, ('Lagrange', 1))
-    assert V.ufl_element().cell() == cell
+    V = functionspace(mesh, ("Lagrange", 1, (gdim,)))
+    assert V.ufl_element().cell == cell
+
+
+@pytest.mark.skip_in_parallel
+def test_manifold_spaces():
+    vertices = np.array(
+        [(0.0, 0.0, 1.0), (1.0, 1.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+        dtype=default_real_type,
+    )
+    cells = [(0, 1, 2), (0, 1, 3)]
+    domain = Mesh(element("Lagrange", "triangle", 1, shape=(2,), dtype=default_real_type))
+    mesh = create_mesh(MPI.COMM_WORLD, cells, vertices, domain)
+    gdim = mesh.geometry.dim
+    QV = functionspace(mesh, ("Lagrange", 1, (gdim,)))
+    QT = functionspace(mesh, ("Lagrange", 1, (gdim, gdim)))
+    u, v = Function(QV), Function(QT)
+    assert u.ufl_shape == (3,)
+    assert v.ufl_shape == (3, 3)

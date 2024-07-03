@@ -79,21 +79,11 @@ Interpolation
 .. doxygenfunction:: dolfinx::fem::interpolation_coords
    :project: DOLFINx
 
-.. doxygenfunction:: dolfinx::fem::interpolate(Function<T> &u, const Function<T> &v, std::span<const std::int32_t> cells)
-   :project: DOLFINx
-
-
-.. doxygenfunction:: dolfinx::fem::interpolate(Function<T>& u, std::span<const T> f, std::array<std::size_t, 2> fshape, std::span<const std::int32_t> cells)
-   :project: DOLFINx
-
 
 Sparsity pattern construction
 -----------------------------
 
-.. doxygenfunction:: dolfinx::fem::create_sparsity_pattern(const Form<T>&)
-   :project: DOLFINx
-
-.. doxygenfunction:: dolfinx::fem::create_sparsity_pattern(const mesh::Topology &topology, const std::array<std::reference_wrapper<const DofMap>, 2> &dofmaps, const std::set<IntegralType> &integrals)
+.. doxygenfunction:: dolfinx::fem::create_sparsity_pattern(const Form<T, U>&)
    :project: DOLFINx
 
 

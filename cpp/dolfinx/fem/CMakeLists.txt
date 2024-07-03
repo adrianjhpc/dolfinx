@@ -15,10 +15,11 @@ set(HEADERS_fem
     ${CMAKE_CURRENT_SOURCE_DIR}/assemble_vector_impl.h
     ${CMAKE_CURRENT_SOURCE_DIR}/discreteoperators.h
     ${CMAKE_CURRENT_SOURCE_DIR}/dofmapbuilder.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/dolfin_fem.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/dolfinx_fem.h
     ${CMAKE_CURRENT_SOURCE_DIR}/interpolate.h
     ${CMAKE_CURRENT_SOURCE_DIR}/petsc.h
     ${CMAKE_CURRENT_SOURCE_DIR}/sparsitybuild.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/traits.h
     ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
     PARENT_SCOPE
 )
@@ -30,9 +31,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/DofMap.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/ElementDofLayout.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/FiniteElement.cpp
-          ${CMAKE_CURRENT_SOURCE_DIR}/FunctionSpace.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/dofmapbuilder.cpp
-          ${CMAKE_CURRENT_SOURCE_DIR}/interpolate.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/petsc.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/sparsitybuild.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/utils.cpp

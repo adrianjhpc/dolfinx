@@ -15,36 +15,35 @@ import subprocess
 
 
 def _pkgconfig_query(s):
-    pkg_config_exe = os.environ.get('PKG_CONFIG', None) or 'pkg-config'
-    cmd = [pkg_config_exe] + s.split()
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pkg_config_exe = os.environ.get("PKG_CONFIG", None) or "pkg-config"
+    cmd = [pkg_config_exe, *s.split()]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = proc.communicate()
     rc = proc.returncode
-    return (rc, out.rstrip().decode('utf-8'))
+    return (rc, out.rstrip().decode("utf-8"))
 
 
-def exists(package):
-    "Test for the existence of a pkg-config file for a named package"
-    return (_pkgconfig_query("--exists " + package)[0] == 0)
+def exists(package) -> bool:
+    """Test for the existence of a pkg-config file for a named package."""
+    return _pkgconfig_query("--exists " + package)[0] == 0
 
 
 def parse(package):
-    "Return a dict containing compile-time definitions"
+    """Return a dict containing compile-time definitions."""
     parse_map = {
-        '-D': 'define_macros',
-        '-I': 'include_dirs',
-        '-L': 'library_dirs',
-        '-l': 'libraries'
+        "-D": "define_macros",
+        "-I": "include_dirs",
+        "-L": "library_dirs",
+        "-l": "libraries",
     }
 
     result = {x: [] for x in parse_map.values()}
 
-    # Execute the query to pkg-config and clean the result.
-    out = _pkgconfig_query(package + ' --cflags --libs')[1]
-    out = out.replace('\\"', '')
+    # Execute the query to pkg-config and clean the result
+    out = _pkgconfig_query(package + " --cflags --libs")[1]
+    out = out.replace('\\"', "")
 
-    # Iterate through each token in the output.
+    # Iterate through each token in the output
     for token in out.split():
         key = parse_map.get(token[:2])
         if key:

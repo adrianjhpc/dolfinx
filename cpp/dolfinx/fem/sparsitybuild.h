@@ -1,4 +1,4 @@
-// Copyright (C) 2007-2019 Garth N. Wells
+// Copyright (C) 2007-2023 Garth N. Wells
 //
 // This file is part of DOLFINx (https://www.fenicsproject.org)
 //
@@ -16,11 +16,6 @@ namespace dolfinx::la
 class SparsityPattern;
 }
 
-namespace dolfinx::mesh
-{
-class Topology;
-}
-
 namespace dolfinx::fem
 {
 class DofMap;
@@ -28,80 +23,40 @@ class DofMap;
 /// Support for building sparsity patterns from degree-of-freedom maps.
 namespace sparsitybuild
 {
-
-/// @brief Iterate over cells and insert entries into sparsity pattern
+/// @brief Iterate over cells and insert entries into sparsity pattern.
 ///
-/// @param[in,out] pattern The sparsity pattern to insert into
-/// @param[in] topology The mesh topology to build the sparsity pattern
-/// over
-/// @param[in] dofmaps The dofmap to use in building the sparsity
-/// pattern
-/// @note The sparsity pattern is not finalised
-void cells(
-    la::SparsityPattern& pattern, const mesh::Topology& topology,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps);
-
-/// @brief Iterate over cells and insert entries into sparsity pattern
+/// Inserts the rectangular blocks of indices `dofmap[0][cells[0][i]] x
+/// dofmap[1][cells[1][i]]` into the sparsity pattern, i.e. entries
+/// `(dofmap[0][cells[0][i]][k0], dofmap[0][cells[0][i]][k1])` will
+/// appear in the sparsity pattern.
 ///
-/// @param[in,out] pattern The sparsity pattern to insert into
-/// @param[in] cells The cell indices
-/// @param[in] dofmaps The dofmap to use in building the sparsity
-/// pattern
-/// @note The sparsity pattern is not finalised
-void cells(
-    la::SparsityPattern& pattern, const std::span<const std::int32_t>& cells,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps);
+/// @param pattern Sparsity pattern to insert into.
+/// @param cells Lists of cells to iterate over. `cells[0]` and
+/// `cells[1]` must have the same size.
+/// @param dofmaps Dofmaps to used in building the sparsity pattern.
+/// @note The sparsity pattern is not finalised.
+void cells(la::SparsityPattern& pattern,
+           std::array<std::span<const std::int32_t>, 2> cells,
+           std::array<std::reference_wrapper<const DofMap>, 2> dofmaps);
 
 /// @brief Iterate over interior facets and insert entries into sparsity
 /// pattern.
 ///
-/// @param[in,out] pattern The sparsity pattern to insert into
-/// @param[in] topology The mesh topology to build the sparsity pattern
-/// over
-/// @param[in] dofmaps The dofmap to use in building the sparsity
-/// pattern
-/// @note The sparsity pattern is not finalised
+/// Inserts the rectangular blocks of indices `[dofmap[0][cell0],
+/// dofmap[0][cell1]] x [dofmap[1][cell0] + dofmap[1][cell1]]` where
+/// `cell0` and `cell1` are the two cells attached to a facet.
+///
+/// @param[in,out] pattern Sparsity pattern to insert into.
+/// @param[in] cells Cells to index into each dofmap. `cells[i]` is a
+/// list of `(cell0, cell1)` pairs for each interior facet to index into
+/// `dofmap[i]`. `cells[0]` and `cells[1]` must have the same size.
+/// @param[in] dofmaps Dofmaps to use in building the sparsity pattern.
+///
+/// @note The sparsity pattern is not finalised.
 void interior_facets(
-    la::SparsityPattern& pattern, const mesh::Topology& topology,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps);
-
-/// @brief Iterate over interior facets and insert entries into sparsity
-/// pattern.
-///
-/// @param[in,out] pattern The sparsity pattern to insert into
-/// @param[in] facets The facets as `(cell, local_index)` pairs, where
-/// `local_index` is the index of the facet relative to the `cell`
-/// @param[in] dofmaps The dofmap to use in building the sparsity
-/// pattern
-/// @note The sparsity pattern is not finalised
-void interior_facets(
-    la::SparsityPattern& pattern, const std::span<const std::int32_t>& facets,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps);
-
-/// @brief Iterate over exterior facets and insert entries into sparsity
-/// pattern.
-///
-/// @param[in,out] pattern The sparsity pattern to insert into
-/// @param[in] topology The mesh topology to build the sparsity pattern
-/// over
-/// @param[in] dofmaps The dofmap to use in building the sparsity
-/// pattern
-/// @note The sparsity pattern is not finalised
-void exterior_facets(
-    la::SparsityPattern& pattern, const mesh::Topology& topology,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps);
-
-/// @brief Iterate over exterior facets and insert entries into sparsity
-/// pattern.
-///
-/// @param[in,out] pattern The sparsity pattern to insert into
-/// @param[in] facets The facets as (cell, local_index) pairs
-/// @param[in] dofmaps The dofmap to use in building the sparsity
-/// pattern
-/// @note The sparsity pattern is not finalised
-void exterior_facets(
-    la::SparsityPattern& pattern, const std::span<const std::int32_t>& facets,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps);
+    la::SparsityPattern& pattern,
+    std::array<std::span<const std::int32_t>, 2> cells,
+    std::array<std::reference_wrapper<const DofMap>, 2> dofmaps);
 
 } // namespace sparsitybuild
 } // namespace dolfinx::fem

@@ -1,53 +1,40 @@
----
 name: macOS build
 
 on:
   schedule:
     # '*' is a special character in YAML, so string must be quoted
     - cron: "0 4 * * WED"
-  workflow_dispatch: ~
+  workflow_dispatch:
 
 jobs:
   mac-os-build:
     name: macOS Homebrew install and test
-    strategy:
-      matrix:
-        os: [macos-12]
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-14
+    env:
+      PETSC_ARCH: arch-darwin-c-opt
+      PETSC_DIR: ${{ github.workspace }}/petsc
 
     steps:
-      # Some of these dependencies (e.g. python@3.10) are already installed in the GH action
-      # runner but included here for completeness
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install Homebrew dependencies
         run: |
-          brew install adios2 boost cmake hdf5-mpi ninja open-mpi pkg-config pugixml python@3.10 # FEniCS
-          brew install flex # PETSc
-          brew list --versions
+          brew install adios2 boost cmake hdf5-mpi make ninja open-mpi pkg-config pugixml spdlog # FEniCS
+          brew install bison flex # PETSc
 
-      # This 'activates' Python 3.10 from Homebrew
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Create virtualenv
+      - name: Install Python dependencies
         run: |
-          python -m venv create fenicsx
-          source fenicsx/bin/activate
-          python -m pip install --upgrade setuptools
-          python -m pip install --upgrade pip
-          echo "VIRTUAL ENV:" $VIRTUAL_ENV
-          echo '$(which python):' $(which python)
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install cffi cppimport cython numba numpy pytest pytest-xdist scipy
+          python -m pip install --no-build-isolation mpi4py
 
-      # bison > 3 required. Could not get PETSc to find keg-only Homebrew
-      # bison. Instead let PETSc build bison.
-      - name: Install minimal PETSc
+      - name: Install minimal PETSc and petsc4py
         run: |
-          source fenicsx/bin/activate
-          curl -L -O http://ftp.mcs.anl.gov/pub/petsc/release-snapshots/petsc-lite-3.18.3.tar.gz
-          mkdir petsc
-          tar -xf petsc-lite-3.18.3.tar.gz -C petsc --strip-components=1
+          export PATH="$(brew --prefix bison)/bin:$PATH"
+          git clone -b release https://gitlab.com/petsc/petsc.git petsc
           cd petsc
           python ./configure \
             --with-64-bit-indices=no \
@@ -56,52 +43,64 @@ jobs:
             --with-scalar-type=real \
             --with-shared-libraries \
             --with-scalar-type=real \
-            --with-make-np=3 \
-            --download-bison \
             --download-metis \
-            --download-ptscotch
+            --download-parmetis \
+            --download-ptscotch \
+            --download-scalapack \
+            --download-mumps \
+            --download-mumps-avoid-mpi-in-place
           make all
           cd src/binding/petsc4py
-          PETSC_DIR=$GITHUB_WORKSPACE/petsc PETSC_ARCH=arch-darwin-c-opt pip3 install --no-cache-dir .
- 
-      - name: Install Basix
+          arch -arm64 python -m pip -v install --no-build-isolation --no-cache-dir .
+
+      - name: Install FEniCSx dependencies
         run: |
-          source fenicsx/bin/activate
           python -m pip install git+https://github.com/FEniCS/basix.git
-
-      - name: Install UFL
-        run: |
-          source fenicsx/bin/activate
           python -m pip install git+https://github.com/FEniCS/ufl.git
-
-      - name: Install FFCx
-        run: |
-          source fenicsx/bin/activate
           python -m pip install git+https://github.com/FEniCS/ffcx.git
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           path: dolfinx
-          ref: main
 
       - name: Build and install DOLFINx C++ library
+        working-directory: dolfinx
         run: |
-          source fenicsx/bin/activate
-          cd dolfinx
-          PETSC_DIR=$GITHUB_WORKSPACE/petsc PETSC_ARCH=arch-darwin-c-opt \
-          cmake -G Ninja -DPython3_EXECUTABLE=$(which python) -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/fenicsx -B build -S cpp/
+          cmake -G Ninja -B build -S cpp/
           cmake --build build
-          cmake --install build
+          sudo cmake --install build
+
+      - name: Build C++ unit tests
+        working-directory: dolfinx
+        run: |
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Developer -B build/test/ -S cpp/test/
+          cmake --build build/test --parallel 3
+
+      - name: Run C++ unit tests (serial)
+        working-directory: dolfinx
+        run: |
+          cd build/test
+          ctest -V --output-on-failure -R unittests
+      - name: Run C++ unit tests (MPI)
+        working-directory: dolfinx
+        run: |
+          cd build/test
+          mpiexec -np 3 ctest -V --output-on-failure -R unittests
 
       - name: Build and install DOLFINx Python interface
+        working-directory: dolfinx
         run: |
-          source fenicsx/bin/activate
-          cd dolfinx
-          PETSC_DIR=$GITHUB_WORKSPACE/petsc PETSC_ARCH=arch-darwin-c-opt \
-          python -m pip -v install python/
+          python -m pip install -r python/build-requirements.txt
+          python -m pip install --check-build-dependencies --no-build-isolation python/
 
       - name: Basic test
         run: |
-          source fenicsx/bin/activate
           python -c "import dolfinx; from mpi4py import MPI; dolfinx.mesh.create_rectangle(comm=MPI.COMM_WORLD, points=((0, 0), (2, 1)), n=(32, 16))"
           mpirun -np 2 python -c "import dolfinx; from mpi4py import MPI; dolfinx.mesh.create_rectangle(comm=MPI.COMM_WORLD, points=((0, 0), (2, 1)), n=(32, 16))"
+
+      - name: Run Python unit tests (serial)
+        working-directory: dolfinx
+        run: python3 -m pytest -n=auto --durations=50 python/test/unit/
+      - name: Run Python unit tests (MPI, np=3)
+        working-directory: dolfinx
+        run: mpirun -np 3 python3 -m pytest python/test/unit/

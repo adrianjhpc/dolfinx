@@ -32,19 +32,20 @@ C++ core
 .. rubric:: Required
 
 - C++ compiler (supporting the C++20 standard)
-- `Boost <http://www.boost.org>`_, with the following compiled Boost
+- `Basix <https://github.com/FEniCS/basix>`_
+- `Boost <https://www.boost.org>`_, with the following compiled Boost
   components
 
   - timer
 
 - `CMake <https://cmake.org>`_ [build dependency]
-- `pkg-config <https://www.freedesktop.org/wiki/Software/pkg-config/>`_
-- `Basix <http://github.com/FEniCS/basix>`_
-- `pugixml <https://pugixml.org/>`_
-- UFCx [``ufcx.h``, provided by FFCx]
-- MPI
 - HDF5 (with MPI support enabled)
+- MPI
 - `PETSc <https://petsc.org/>`_ [1]_
+- `pkg-config <https://www.freedesktop.org/wiki/Software/pkg-config/>`_
+- `pugixml <https://pugixml.org/>`_
+- `spdlog <https://github.com/gabime/spdlog/>`_
+- UFCx [``ufcx.h``, provided by FFCx]
 - At least one of ParMETIS [2]_, KaHIP or PT-SCOTCH [2]_
 
 From ParMETIS, KaHIP or PT-SCOTCH, ParMETIS is recommended.
@@ -64,11 +65,12 @@ Below are additional requirements for the Python interface.
 .. rubric:: Required
 
 - Python
-- FFCx, UFL and Basix (http://github.com/FEniCS/).
-- pybind11 (https://github.com/pybind/pybind11)
-- NumPy (http://www.numpy.org)
+- FFCx, UFL and Basix (https://github.com/FEniCS/).
 - mpi4py
+- nanobind (https://github.com/wjakob/nanobind)
+- NumPy (https://www.numpy.org)
 - petsc4py
+- scikit-build-core[pyproject] (https://scikit-build-core.readthedocs.io)
 
 .. rubric:: Suggested
 
@@ -101,15 +103,15 @@ Python
 After installation of the C++ core, from the ``python/`` directory the
 Python interface can be installed using::
 
-    pip install .
+    pip install -r build-requirements.txt
+    pip install --check-build-dependencies --no-build-isolation .
 
 
 .. rubric:: Footnotes
 
 .. [1] Its is recommended to configure with ParMETIS, PT-SCOTCH,
-       MUMPS and Hypre using the
+       MUMPS and Hypre using
        ``--download-parmetis --download-ptscotch --download-suitesparse
        --download-mumps --download-hypre``
 
 .. [2] PETSc can download and configure and build these libraries.
-

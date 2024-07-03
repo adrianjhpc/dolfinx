@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.13.6
+#       jupytext_version: 1.15.1
 # ---
 
 # # Cahn-Hilliard equation
@@ -22,7 +22,8 @@
 #   ({py:class}`NewtonSolver<dolfinx.nls.petsc.NewtonSolver>`)
 # - Form compiler options
 # - Interpolation of functions
-# - Visualisation of a running simulation with pyvista
+# - Visualisation of a running simulation with
+#   [PyVista](https://pyvista.org/)
 #
 # This demo is implemented in {download}`demo_cahn-hilliard.py`.
 #
@@ -96,9 +97,9 @@
 # \end{align}
 # $$
 #
-# where $dt = t_{n+1} - t_{n}$ and $\mu_{n+\theta} = (1-\theta) \mu_{n}
-# + \theta \mu_{n+1}$.  The task is: given $c_{n}$ and $\mu_{n}$, solve
-# the above equation to find $c_{n+1}$ and $\mu_{n+1}$.
+# where $dt = t_{n+1} - t_{n}$ and $\mu_{n+\theta} = (1-\theta) \mu_{n} + \theta \mu_{n+1}$.
+# The task is: given $c_{n}$ and $\mu_{n}$, solve the above equation to
+# find $c_{n+1}$ and $\mu_{n+1}$.
 #
 # ### Demo parameters
 #
@@ -120,22 +121,36 @@
 # +
 import os
 
+try:
+    from petsc4py import PETSc
+
+    import dolfinx
+
+    if not dolfinx.has_petsc:
+        print("This demo requires DOLFINx to be compiled with PETSc enabled.")
+        exit(0)
+except ModuleNotFoundError:
+    print("This demo requires petsc4py.")
+    exit(0)
+
+from mpi4py import MPI
+
 import numpy as np
+
 import ufl
-from dolfinx.fem import Function, FunctionSpace
+from basix.ufl import element, mixed_element
+from dolfinx import default_real_type, log, plot
+from dolfinx.fem import Function, functionspace
 from dolfinx.fem.petsc import NonlinearProblem
 from dolfinx.io import XDMFFile
 from dolfinx.mesh import CellType, create_unit_square
 from dolfinx.nls.petsc import NewtonSolver
-from mpi4py import MPI
-from petsc4py import PETSc
 from ufl import dx, grad, inner
-
-from dolfinx import log, plot
 
 try:
     import pyvista as pv
     import pyvistaqt as pvqt
+
     have_pyvista = True
     if pv.OFF_SCREEN:
         pv.start_xvfb(wait=0.5)
@@ -155,12 +170,12 @@ theta = 0.5  # time stepping family, e.g. theta=1 -> backward Euler, theta=0.5 -
 
 # A unit square mesh with 96 cells edges in each direction is created,
 # and on this mesh a
-# {py:class}`FunctionSpace<dolfinx.fem.FunctionSpace>` `ME` is built
+# {py:class}`FunctionSpace <dolfinx.fem.FunctionSpace>` `ME` is built
 # using a pair of linear Lagrange elements.
 
 msh = create_unit_square(MPI.COMM_WORLD, 96, 96, CellType.triangle)
-P1 = ufl.FiniteElement("Lagrange", msh.ufl_cell(), 1)
-ME = FunctionSpace(msh, P1 * P1)
+P1 = element("Lagrange", msh.basix_cell(), 1, dtype=default_real_type)
+ME = functionspace(msh, mixed_element([P1, P1]))
 
 # Trial and test functions of the space `ME` are now defined:
 
@@ -199,7 +214,8 @@ c0, mu0 = ufl.split(u0)
 u.x.array[:] = 0.0
 
 # Interpolate initial condition
-u.sub(0).interpolate(lambda x: 0.63 + 0.02 * (0.5 - np.random.rand(x.shape[1])))
+rng = np.random.default_rng(42)
+u.sub(0).interpolate(lambda x: 0.63 + 0.02 * (0.5 - rng.random(x.shape[1])))
 u.x.scatter_forward()
 # -
 
@@ -217,7 +233,7 @@ u.x.scatter_forward()
 
 # Compute the chemical potential df/dc
 c = ufl.variable(c)
-f = 100 * c**2 * (1 - c)**2
+f = 100 * c**2 * (1 - c) ** 2
 dfdc = ufl.diff(f, c)
 
 # The first line declares that `c` is a variable that some function can
@@ -252,15 +268,21 @@ F = F0 + F1
 problem = NonlinearProblem(F, u)
 solver = NewtonSolver(MPI.COMM_WORLD, problem)
 solver.convergence_criterion = "incremental"
-solver.rtol = 1e-6
+solver.rtol = np.sqrt(np.finfo(default_real_type).eps) * 1e-2
 
 # We can customize the linear solver used inside the NewtonSolver by
 # modifying the PETSc options
 ksp = solver.krylov_solver
-opts = PETSc.Options()
+opts = PETSc.Options()  # type: ignore
 option_prefix = ksp.getOptionsPrefix()
 opts[f"{option_prefix}ksp_type"] = "preonly"
 opts[f"{option_prefix}pc_type"] = "lu"
+sys = PETSc.Sys()  # type: ignore
+# For factorisation prefer superlu_dist, then MUMPS, then default
+if sys.hasExternalPackage("superlu_dist"):
+    opts[f"{option_prefix}pc_factor_mat_solver_type"] = "superlu_dist"
+elif sys.hasExternalPackage("mumps"):
+    opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
 ksp.setFromOptions()
 # -
 
@@ -295,7 +317,7 @@ V0, dofs = ME.sub(0).collapse()
 # Prepare viewer for plotting the solution during the computation
 if have_pyvista:
     # Create a VTK 'mesh' with 'nodes' at the function dofs
-    topology, cell_types, x = plot.create_vtk_mesh(V0)
+    topology, cell_types, x = plot.vtk_mesh(V0)
     grid = pv.UnstructuredGrid(topology, cell_types, x)
 
     # Set output data
@@ -309,10 +331,10 @@ if have_pyvista:
 
 c = u.sub(0)
 u0.x.array[:] = u.x.array
-while (t < T):
+while t < T:
     t += dt
     r = solver.solve(u)
-    print(f"Step {int(t/dt)}: num iterations: {r[0]}")
+    print(f"Step {int(t / dt)}: num iterations: {r[0]}")
     u0.x.array[:] = u.x.array
     file.write_function(c, t)
 

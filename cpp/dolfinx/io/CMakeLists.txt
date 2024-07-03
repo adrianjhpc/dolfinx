@@ -1,5 +1,5 @@
 set(HEADERS_io
-    ${CMAKE_CURRENT_SOURCE_DIR}/dolfin_io.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/dolfinx_io.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ADIOS2Writers.h
     ${CMAKE_CURRENT_SOURCE_DIR}/cells.h
     ${CMAKE_CURRENT_SOURCE_DIR}/HDF5Interface.h
@@ -8,8 +8,6 @@ set(HEADERS_io
     ${CMAKE_CURRENT_SOURCE_DIR}/XDMFFile.h
     ${CMAKE_CURRENT_SOURCE_DIR}/xdmf_function.h
     ${CMAKE_CURRENT_SOURCE_DIR}/xdmf_mesh.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/xdmf_meshtags.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/xdmf_read.h
     ${CMAKE_CURRENT_SOURCE_DIR}/xdmf_utils.h
     PARENT_SCOPE
 )

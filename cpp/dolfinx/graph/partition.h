@@ -6,9 +6,9 @@
 
 #pragma once
 
+#include "AdjacencyList.h"
 #include <algorithm>
 #include <cstdint>
-#include <dolfinx/graph/AdjacencyList.h>
 #include <functional>
 #include <mpi.h>
 #include <span>
@@ -19,11 +19,8 @@
 
 namespace dolfinx::graph
 {
-
 /// @brief Signature of functions for computing the parallel
 /// partitioning of a distributed graph.
-// See https://github.com/doxygen/doxygen/issues/9552
-/// @cond
 /// @param[in] comm MPI Communicator that the graph is distributed
 /// across
 /// @param[in] nparts Number of partitions to divide graph nodes into
@@ -31,19 +28,19 @@ namespace dolfinx::graph
 /// @param[in] ghosting Flag to enable ghosting of the output node
 /// distribution
 /// @return Destination rank for each input node
-/// @endcond
 using partition_fn = std::function<graph::AdjacencyList<std::int32_t>(
     MPI_Comm, int, const AdjacencyList<std::int64_t>&, bool)>;
 
-/// Partition graph across processes using the default graph partitioner
+/// @brief Partition graph across processes using the default graph
+/// partitioner.
 ///
-/// @param[in] comm MPI Communicator that the graph is distributed
-/// across
-/// @param[in] nparts Number of partitions to divide graph nodes into
-/// @param[in] local_graph Node connectivity graph
+/// @param[in] comm MPI communicator that the graph is distributed
+/// across.
+/// @param[in] nparts Number of partitions to divide graph nodes into.
+/// @param[in] local_graph Node connectivity graph.
 /// @param[in] ghosting Flag to enable ghosting of the output node
-/// distribution
-/// @return Destination rank for each input node
+/// distribution.
+/// @return Destination rank for each input node.
 AdjacencyList<std::int32_t>
 partition_graph(MPI_Comm comm, int nparts,
                 const AdjacencyList<std::int64_t>& local_graph, bool ghosting);
@@ -70,6 +67,26 @@ namespace build
 std::tuple<graph::AdjacencyList<std::int64_t>, std::vector<int>,
            std::vector<std::int64_t>, std::vector<int>>
 distribute(MPI_Comm comm, const graph::AdjacencyList<std::int64_t>& list,
+           const graph::AdjacencyList<std::int32_t>& destinations);
+
+/// @brief Distribute fixed size nodes to destination ranks.
+///
+/// The global index of each node is assumed to be the local index plus
+/// the offset for this rank.
+///
+/// @param[in] comm MPI Communicator
+/// @param[in] list A flattened 2D row major array
+/// @param[in] shape The shape of the array
+/// @param[in] destinations Destination ranks for the ith row of the
+/// array. The first rank is the 'owner' of the node.
+/// @return
+/// 1. Received list for this process
+/// 2. Original global index for each node
+/// 3. Owner rank of ghost nodes
+std::tuple<std::vector<std::int64_t>, std::vector<std::int64_t>,
+           std::vector<int>>
+distribute(MPI_Comm comm, std::span<const std::int64_t> list,
+           std::array<std::size_t, 2> shape,
            const graph::AdjacencyList<std::int32_t>& destinations);
 
 /// @brief Take a set of distributed input global indices, including
@@ -106,14 +123,14 @@ compute_ghost_indices(MPI_Comm comm,
 /// starting from zero, compute a local-to-global map for the links.
 /// Both adjacency lists must have the same shape.
 ///
-/// @param[in] global Adjacency list with global link indices
-/// @param[in] local Adjacency list with local, contiguous link indices
+/// @param[in] global Adjacency list with global link indices.
+/// @param[in] local Adjacency list with local, contiguous link indices.
 /// @return Map from local index to global index, which if applied to
 /// the local adjacency list indices would yield the global adjacency
-/// list
+/// list.
 std::vector<std::int64_t>
-compute_local_to_global_links(const graph::AdjacencyList<std::int64_t>& global,
-                              const graph::AdjacencyList<std::int32_t>& local);
+compute_local_to_global(std::span<const std::int64_t> global,
+                        std::span<const std::int32_t> local);
 
 /// @brief Compute a local0-to-local1 map from two local-to-global maps
 /// with common global indices.

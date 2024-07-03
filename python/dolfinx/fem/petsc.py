@@ -9,50 +9,76 @@ Functions in this module generally apply functions in :mod:`dolfinx.fem`
 to PETSc linear algebra objects and handle any PETSc-specific
 preparation."""
 
+# mypy: ignore-errors
 
 from __future__ import annotations
 
 import contextlib
 import functools
-import os
 import typing
 
+from petsc4py import PETSc
+
+import numpy as np
+
+import dolfinx.cpp as _cpp
 import ufl
-from dolfinx import cpp as _cpp
 from dolfinx import la
 from dolfinx.cpp.fem import pack_coefficients as _pack_coefficients
 from dolfinx.cpp.fem import pack_constants as _pack_constants
-from dolfinx.fem import assemble
-from dolfinx.fem.bcs import DirichletBCMetaClass
+from dolfinx.cpp.fem.petsc import discrete_gradient as _discrete_gradient
+from dolfinx.cpp.fem.petsc import interpolation_matrix as _interpolation_matrix
+from dolfinx.fem import assemble as _assemble
+from dolfinx.fem.bcs import DirichletBC
 from dolfinx.fem.bcs import bcs_by_block as _bcs_by_block
-from dolfinx.fem.forms import FormMetaClass
+from dolfinx.fem.forms import Form
 from dolfinx.fem.forms import extract_function_spaces as _extract_spaces
 from dolfinx.fem.forms import form as _create_form
-from dolfinx.fem.forms import form_types
 from dolfinx.fem.function import Function as _Function
+from dolfinx.fem.function import FunctionSpace as _FunctionSpace
+from dolfinx.la import create_petsc_vector
 
-import petsc4py
-import petsc4py.lib
-from petsc4py import PETSc
+__all__ = [
+    "create_vector",
+    "create_vector_block",
+    "create_vector_nest",
+    "create_matrix",
+    "create_matrix_block",
+    "create_matrix_nest",
+    "assemble_vector",
+    "assemble_vector_nest",
+    "assemble_vector_block",
+    "assemble_matrix",
+    "assemble_matrix_nest",
+    "assemble_matrix_block",
+    "apply_lifting",
+    "apply_lifting_nest",
+    "set_bc",
+    "set_bc_nest",
+    "LinearProblem",
+    "NonlinearProblem",
+    "discrete_gradient",
+    "interpolation_matrix",
+]
 
 
-def _extract_function_spaces(a: typing.List[typing.List[FormMetaClass]]):
+def _extract_function_spaces(a: list[list[Form]]):
     """From a rectangular array of bilinear forms, extract the function
     spaces for each block row and block column.
-
     """
-
     assert len({len(cols) for cols in a}) == 1, "Array of function spaces is not rectangular"
 
     # Extract (V0, V1) pair for each block in 'a'
     def fn(form):
         return form.function_spaces if form is not None else None
+
     from functools import partial
+
     Vblock: typing.Iterable = map(partial(map, fn), a)
 
     # Compute spaces for each row/column block
-    rows: typing.List[typing.Set] = [set() for i in range(len(a))]
-    cols: typing.List[typing.Set] = [set() for i in range(len(a[0]))]
+    rows: list[set] = [set() for i in range(len(a))]
+    cols: list[set] = [set() for i in range(len(a[0]))]
     for i, Vrow in enumerate(Vblock):
         for j, V in enumerate(Vrow):
             if V is not None:
@@ -69,105 +95,104 @@ def _extract_function_spaces(a: typing.List[typing.List[FormMetaClass]]):
 # -- Vector instantiation ----------------------------------------------------
 
 
-def create_vector(L: form_types) -> PETSc.Vec:
-    """Create a PETSc vector that is compaible with a linear form.
+def create_vector(L: Form) -> PETSc.Vec:
+    """Create a PETSc vector that is compatible with a linear form.
 
     Args:
         L: A linear form.
 
     Returns:
-        A PETSc vector with a layout that is compatible with `L`.
-
+        A PETSc vector with a layout that is compatible with ``L``.
     """
     dofmap = L.function_spaces[0].dofmap
-    return la.create_petsc_vector(dofmap.index_map, dofmap.index_map_bs)
+    return create_petsc_vector(dofmap.index_map, dofmap.index_map_bs)
 
 
-def create_vector_block(L: typing.List[form_types]) -> PETSc.Vec:
-    """Create a PETSc vector (blocked) that is compaible with a list of linear forms.
+def create_vector_block(L: list[Form]) -> PETSc.Vec:
+    """Create a PETSc vector (blocked) that is compatible with a list of linear forms.
 
     Args:
         L: List of linear forms.
 
     Returns:
-        A PETSc vector with a layout that is compatible with `L`.
+        A PETSc vector with a layout that is compatible with ``L``.
 
     """
-    maps = [(form.function_spaces[0].dofmap.index_map,
-             form.function_spaces[0].dofmap.index_map_bs) for form in L]
+    maps = [
+        (form.function_spaces[0].dofmap.index_map, form.function_spaces[0].dofmap.index_map_bs)
+        for form in L
+    ]
     return _cpp.fem.petsc.create_vector_block(maps)
 
 
-def create_vector_nest(L: typing.List[form_types]) -> PETSc.Vec:
-    """Create a PETSc netsted vector (``VecNest``) that is compaible with a list of linear forms.
+def create_vector_nest(L: list[Form]) -> PETSc.Vec:
+    """Create a PETSc nested vector (``VecNest``) that is compatible with a list of linear forms.
 
     Args:
         L: List of linear forms.
 
     Returns:
         A PETSc nested vector (``VecNest``) with a layout that is
-        compatible with `L`.
-
+        compatible with ``L``.
     """
-    maps = [(form.function_spaces[0].dofmap.index_map,
-             form.function_spaces[0].dofmap.index_map_bs) for form in L]
+    maps = [
+        (form.function_spaces[0].dofmap.index_map, form.function_spaces[0].dofmap.index_map_bs)
+        for form in L
+    ]
     return _cpp.fem.petsc.create_vector_nest(maps)
 
 
 # -- Matrix instantiation ----------------------------------------------------
 
-def create_matrix(a: form_types, mat_type=None) -> PETSc.Mat:
-    """Create a PETSc matrix that is compaible with a bilinear form.
+
+def create_matrix(a: Form, mat_type=None) -> PETSc.Mat:
+    """Create a PETSc matrix that is compatible with a bilinear form.
 
     Args:
         a: A bilinear form.
         mat_type: The PETSc matrix type (``MatType``).
 
     Returns:
-        A PETSc matrix with a layout that is compatible with `a`.
-
+        A PETSc matrix with a layout that is compatible with ``a``.
     """
     if mat_type is None:
-        return _cpp.fem.petsc.create_matrix(a)
+        return _cpp.fem.petsc.create_matrix(a._cpp_object)
     else:
-        return _cpp.fem.petsc.create_matrix(a, mat_type)
+        return _cpp.fem.petsc.create_matrix(a._cpp_object, mat_type)
 
 
-def create_matrix_block(a: typing.List[typing.List[form_types]]) -> PETSc.Mat:
-    """Create a PETSc matrix that is compaible with a rectangular array of bilinear forms.
-
-    Args:
-        a: A rectangular array of bilinear forms.
-
-    Returns:
-        A PETSc matrix with a blocked layout that is compatible with `a`.
-
-    """
-    return _cpp.fem.petsc.create_matrix_block(a)
-
-
-def create_matrix_nest(a: typing.List[typing.List[form_types]]) -> PETSc.Mat:
-    """Create a PETSc matrix (``MatNest``) that is compaible with a rectangular array of bilinear forms.
+def create_matrix_block(a: list[list[Form]]) -> PETSc.Mat:
+    """Create a PETSc matrix that is compatible with a rectangular array of bilinear forms.
 
     Args:
-        a: A rectangular array of bilinear forms.
+        a: Rectangular array of bilinear forms.
 
     Returns:
-        A PETSc matrix ('MatNest``) that is compatible with `a`.
-
+        A PETSc matrix with a blocked layout that is compatible with
+        ``a``.
     """
-    return _cpp.fem.petsc.create_matrix_nest(a)
+    _a = [[None if form is None else form._cpp_object for form in arow] for arow in a]
+    return _cpp.fem.petsc.create_matrix_block(_a)
+
+
+def create_matrix_nest(a: list[list[Form]]) -> PETSc.Mat:
+    """Create a PETSc matrix (``MatNest``) that is compatible with an array of bilinear forms.
+
+    Args:
+        a: Rectangular array of bilinear forms.
+
+    Returns:
+        A PETSc matrix (``MatNest``) that is compatible with ``a``.
+    """
+    _a = [[None if form is None else form._cpp_object for form in arow] for arow in a]
+    return _cpp.fem.petsc.create_matrix_nest(_a)
 
 
 # -- Vector assembly ---------------------------------------------------------
 
+
 @functools.singledispatch
 def assemble_vector(L: typing.Any, constants=None, coeffs=None) -> PETSc.Vec:
-    return _assemble_vector_form(L, constants, coeffs)
-
-
-@assemble_vector.register(FormMetaClass)
-def _assemble_vector_form(L: form_types, constants=None, coeffs=None) -> PETSc.Vec:
     """Assemble linear form into a new PETSc vector.
 
     Note:
@@ -179,17 +204,17 @@ def _assemble_vector_form(L: form_types, constants=None, coeffs=None) -> PETSc.V
 
     Returns:
         An assembled vector.
-
     """
-    b = la.create_petsc_vector(L.function_spaces[0].dofmap.index_map,
-                               L.function_spaces[0].dofmap.index_map_bs)
+    b = create_petsc_vector(
+        L.function_spaces[0].dofmap.index_map, L.function_spaces[0].dofmap.index_map_bs
+    )
     with b.localForm() as b_local:
-        assemble._assemble_vector_array(b_local.array_w, L, constants, coeffs)
+        _assemble._assemble_vector_array(b_local.array_w, L, constants, coeffs)
     return b
 
 
 @assemble_vector.register(PETSc.Vec)
-def _assemble_vector_vec(b: PETSc.Vec, L: form_types, constants=None, coeffs=None) -> PETSc.Vec:
+def _assemble_vector_vec(b: PETSc.Vec, L: Form, constants=None, coeffs=None) -> PETSc.Vec:
     """Assemble linear form into an existing PETSc vector.
 
     Note:
@@ -199,31 +224,27 @@ def _assemble_vector_vec(b: PETSc.Vec, L: form_types, constants=None, coeffs=Non
 
     Args:
         b: Vector to assemble the contribution of the linear form into.
-        L: A linear form to assemble into `b`.
+        L: A linear form to assemble into ``b``.
 
     Returns:
         An assembled vector.
-
     """
     with b.localForm() as b_local:
-        assemble._assemble_vector_array(b_local.array_w, L, constants, coeffs)
+        _assemble._assemble_vector_array(b_local.array_w, L, constants, coeffs)
     return b
 
 
 @functools.singledispatch
 def assemble_vector_nest(L: typing.Any, constants=None, coeffs=None) -> PETSc.Vec:
-    return _assemble_vector_nest_forms(L, constants, coeffs)
+    """Assemble linear forms into a new nested PETSc (``VecNest``) vector.
 
-
-@assemble_vector_nest.register(list)
-def _assemble_vector_nest_forms(L: typing.List[form_types], constants=None, coeffs=None) -> PETSc.Vec:
-    """Assemble linear forms into a new nested PETSc (VecNest) vector.
     The returned vector is not finalised, i.e. ghost values are not
     accumulated on the owning processes.
-
     """
-    maps = [(form.function_spaces[0].dofmap.index_map,
-             form.function_spaces[0].dofmap.index_map_bs) for form in L]
+    maps = [
+        (form.function_spaces[0].dofmap.index_map, form.function_spaces[0].dofmap.index_map_bs)
+        for form in L
+    ]
     b = _cpp.fem.petsc.create_vector_nest(maps)
     for b_sub in b.getNestSubVecs():
         with b_sub.localForm() as b_local:
@@ -232,58 +253,73 @@ def _assemble_vector_nest_forms(L: typing.List[form_types], constants=None, coef
 
 
 @assemble_vector_nest.register
-def _assemble_vector_nest_vec(b: PETSc.Vec, L: typing.List[form_types], constants=None, coeffs=None) -> PETSc.Vec:
-    """Assemble linear forms into a nested PETSc (VecNest) vector. The
-    vector is not zeroed before assembly and it is not finalised, i.e.
-    ghost values are not accumulated on the owning processes.
+def _assemble_vector_nest_vec(
+    b: PETSc.Vec, L: list[Form], constants=None, coeffs=None
+) -> PETSc.Vec:
+    """Assemble linear forms into a nested PETSc (``VecNest``) vector.
 
+    The vector is not zeroed before assembly and it is not finalised,
+    i.e. ghost values are not accumulated on the owning processes.
     """
     constants = [None] * len(L) if constants is None else constants
     coeffs = [None] * len(L) if coeffs is None else coeffs
     for b_sub, L_sub, const, coeff in zip(b.getNestSubVecs(), L, constants, coeffs):
         with b_sub.localForm() as b_local:
-            assemble._assemble_vector_array(b_local.array_w, L_sub, const, coeff)
+            _assemble._assemble_vector_array(b_local.array_w, L_sub, const, coeff)
     return b
 
 
 # FIXME: Revise this interface
 @functools.singledispatch
-def assemble_vector_block(L: typing.List[form_types],
-                          a: typing.List[typing.List[form_types]],
-                          bcs: typing.List[DirichletBCMetaClass] = [],
-                          x0: typing.Optional[PETSc.Vec] = None,
-                          scale: float = 1.0,
-                          constants_L=None, coeffs_L=None,
-                          constants_a=None, coeffs_a=None) -> PETSc.Vec:
-    """Assemble linear forms into a monolithic vector. The vector is not
-    finalised, i.e. ghost values are not accumulated.
+def assemble_vector_block(
+    L: list[Form],
+    a: list[list[Form]],
+    bcs: list[DirichletBC] = [],
+    x0: typing.Optional[PETSc.Vec] = None,
+    scale: float = 1.0,
+    constants_L=None,
+    coeffs_L=None,
+    constants_a=None,
+    coeffs_a=None,
+) -> PETSc.Vec:
+    """Assemble linear forms into a monolithic vector.
 
+    The vector is not finalised, i.e. ghost values are not accumulated.
     """
-    maps = [(form.function_spaces[0].dofmap.index_map,
-             form.function_spaces[0].dofmap.index_map_bs) for form in L]
+    maps = [
+        (form.function_spaces[0].dofmap.index_map, form.function_spaces[0].dofmap.index_map_bs)
+        for form in L
+    ]
     b = _cpp.fem.petsc.create_vector_block(maps)
     with b.localForm() as b_local:
         b_local.set(0.0)
-    return _assemble_vector_block_vec(b, L, a, bcs, x0, scale, constants_L, coeffs_L,
-                                      constants_a, coeffs_a)
+    return _assemble_vector_block_vec(
+        b, L, a, bcs, x0, scale, constants_L, coeffs_L, constants_a, coeffs_a
+    )
 
 
 @assemble_vector_block.register
-def _assemble_vector_block_vec(b: PETSc.Vec,
-                               L: typing.List[form_types],
-                               a: typing.List[typing.List[form_types]],
-                               bcs: typing.List[DirichletBCMetaClass] = [],
-                               x0: typing.Optional[PETSc.Vec] = None,
-                               scale: float = 1.0,
-                               constants_L=None, coeffs_L=None,
-                               constants_a=None, coeffs_a=None) -> PETSc.Vec:
-    """Assemble linear forms into a monolithic vector. The vector is not
-    zeroed and it is not finalised, i.e. ghost values are not
-    accumulated.
+def _assemble_vector_block_vec(
+    b: PETSc.Vec,
+    L: list[Form],
+    a: list[list[Form]],
+    bcs: list[DirichletBC] = [],
+    x0: typing.Optional[PETSc.Vec] = None,
+    scale: float = 1.0,
+    constants_L=None,
+    coeffs_L=None,
+    constants_a=None,
+    coeffs_a=None,
+) -> PETSc.Vec:
+    """Assemble linear forms into a monolithic vector.
 
+    The vector is not zeroed and it is not finalised, i.e. ghost values
+    are not accumulated.
     """
-    maps = [(form.function_spaces[0].dofmap.index_map,
-             form.function_spaces[0].dofmap.index_map_bs) for form in L]
+    maps = [
+        (form.function_spaces[0].dofmap.index_map, form.function_spaces[0].dofmap.index_map_bs)
+        for form in L
+    ]
     if x0 is not None:
         x0_local = _cpp.la.petsc.get_local_vectors(x0, maps)
         x0_sub = x0_local
@@ -291,31 +327,62 @@ def _assemble_vector_block_vec(b: PETSc.Vec,
         x0_local = []
         x0_sub = [None] * len(maps)
 
-    constants_L = [form and _pack_constants(form) for form in L] if constants_L is None else constants_L
-    coeffs_L = [{} if form is None else _pack_coefficients(
-        form) for form in L] if coeffs_L is None else coeffs_L
-    constants_a = [[form and _pack_constants(form) for form in forms]
-                   for forms in a] if constants_a is None else constants_a
-    coeffs_a = [[{} if form is None else _pack_coefficients(
-        form) for form in forms] for forms in a] if coeffs_a is None else coeffs_a
+    constants_L = (
+        [form and _pack_constants(form._cpp_object) for form in L]
+        if constants_L is None
+        else constants_L
+    )
+    coeffs_L = (
+        [{} if form is None else _pack_coefficients(form._cpp_object) for form in L]
+        if coeffs_L is None
+        else coeffs_L
+    )
 
-    bcs1 = _bcs_by_block(_extract_spaces(a, 1), bcs)
+    constants_a = (
+        [
+            [
+                _pack_constants(form._cpp_object)
+                if form is not None
+                else np.array([], dtype=PETSc.ScalarType)
+                for form in forms
+            ]
+            for forms in a
+        ]
+        if constants_a is None
+        else constants_a
+    )
+
+    coeffs_a = (
+        [
+            [{} if form is None else _pack_coefficients(form._cpp_object) for form in forms]
+            for forms in a
+        ]
+        if coeffs_a is None
+        else coeffs_a
+    )
+
+    _bcs = [bc._cpp_object for bc in bcs]
+    bcs1 = _bcs_by_block(_extract_spaces(a, 1), _bcs)
     b_local = _cpp.la.petsc.get_local_vectors(b, maps)
-    for b_sub, L_sub, a_sub, const_L, coeff_L, const_a, coeff_a in zip(b_local, L, a,
-                                                                       constants_L, coeffs_L,
-                                                                       constants_a, coeffs_a):
-        _cpp.fem.assemble_vector(b_sub, L_sub, const_L, coeff_L)
-        _cpp.fem.apply_lifting(b_sub, a_sub, const_a, coeff_a, bcs1, x0_local, scale)
+    for b_sub, L_sub, a_sub, const_L, coeff_L, const_a, coeff_a in zip(
+        b_local, L, a, constants_L, coeffs_L, constants_a, coeffs_a
+    ):
+        _cpp.fem.assemble_vector(b_sub, L_sub._cpp_object, const_L, coeff_L)
+        _a_sub = [None if form is None else form._cpp_object for form in a_sub]
+        _cpp.fem.apply_lifting(b_sub, _a_sub, const_a, coeff_a, bcs1, x0_local, scale)
 
     _cpp.la.petsc.scatter_local_vectors(b, b_local, maps)
     b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
 
-    bcs0 = _bcs_by_block(_extract_spaces(L), bcs)
+    bcs0 = _bcs_by_block(_extract_spaces(L), _bcs)
     offset = 0
     b_array = b.getArray(readonly=False)
     for submap, bc, _x0 in zip(maps, bcs0, x0_sub):
         size = submap[0].size_local * submap[1]
-        _cpp.fem.set_bc(b_array[offset: offset + size], bc, _x0, scale)
+        if _x0 is None:
+            _cpp.fem.set_bc(b_array[offset : offset + size], bc, scale)
+        else:
+            _cpp.fem.set_bc(b_array[offset : offset + size], bc, _x0, scale)
         offset += size
 
     return b
@@ -323,111 +390,211 @@ def _assemble_vector_block_vec(b: PETSc.Vec,
 
 # -- Matrix assembly ---------------------------------------------------------
 @functools.singledispatch
-def assemble_matrix(a: typing.Any, bcs: typing.List[DirichletBCMetaClass] = [],
-                    diagonal: float = 1.0,
-                    constants=None, coeffs=None) -> PETSc.Mat:
-    return _assemble_matrix_form(a, bcs, diagonal, constants, coeffs)
+def assemble_matrix(
+    a: typing.Any, bcs: list[DirichletBC] = [], diagonal: float = 1.0, constants=None, coeffs=None
+):
+    """Assemble bilinear form into a matrix.
 
+    The returned matrix is not finalised, i.e. ghost values are not
+    accumulated.
 
-@assemble_matrix.register(FormMetaClass)
-def _assemble_matrix_form(a: form_types, bcs: typing.List[DirichletBCMetaClass] = [],
-                          diagonal: float = 1.0,
-                          constants=None, coeffs=None) -> PETSc.Mat:
-    """Assemble bilinear form into a matrix. The returned matrix is not
-    finalised, i.e. ghost values are not accumulated.
+    Note:
+        The returned matrix is not 'assembled', i.e. ghost contributions
+        have not been communicated.
 
+    Args:
+        a: Bilinear form to assembled into a matrix.
+        bc: Dirichlet boundary conditions applied to the system.
+        diagonal: Value to set on matrix diagonal for Dirichlet boundary
+            condition constrained degrees-of-freedom.
+        constants: Constants appearing the in the form.
+        coeffs: Coefficients appearing the in the form.
+
+    Returns:
+        Matrix representing the bilinear form.
     """
-    A = _cpp.fem.petsc.create_matrix(a)
-    _assemble_matrix_mat(A, a, bcs, diagonal, constants, coeffs)
+    A = _cpp.fem.petsc.create_matrix(a._cpp_object)
+    assemble_matrix_mat(A, a, bcs, diagonal, constants, coeffs)
     return A
 
 
 @assemble_matrix.register
-def _assemble_matrix_mat(A: PETSc.Mat, a: form_types, bcs: typing.List[DirichletBCMetaClass] = [],
-                         diagonal: float = 1.0, constants=None, coeffs=None) -> PETSc.Mat:
-    """Assemble bilinear form into a matrix. The returned matrix is not
-    finalised, i.e. ghost values are not accumulated.
+def assemble_matrix_mat(
+    A: PETSc.Mat,
+    a: Form,
+    bcs: list[DirichletBC] = [],
+    diagonal: float = 1.0,
+    constants=None,
+    coeffs=None,
+) -> PETSc.Mat:
+    """Assemble bilinear form into a matrix.
 
+    The returned matrix is not finalised, i.e. ghost values are not
+    accumulated.
     """
-    constants = _pack_constants(a) if constants is None else constants
-    coeffs = _pack_coefficients(a) if coeffs is None else coeffs
-    _cpp.fem.petsc.assemble_matrix(A, a, constants, coeffs, bcs)
+    constants = _pack_constants(a._cpp_object) if constants is None else constants
+    coeffs = _pack_coefficients(a._cpp_object) if coeffs is None else coeffs
+    _bcs = [bc._cpp_object for bc in bcs]
+    _cpp.fem.petsc.assemble_matrix(A, a._cpp_object, constants, coeffs, _bcs)
     if a.function_spaces[0] is a.function_spaces[1]:
         A.assemblyBegin(PETSc.Mat.AssemblyType.FLUSH)
         A.assemblyEnd(PETSc.Mat.AssemblyType.FLUSH)
-        _cpp.fem.petsc.insert_diagonal(A, a.function_spaces[0], bcs, diagonal)
+        _cpp.fem.petsc.insert_diagonal(A, a.function_spaces[0], _bcs, diagonal)
     return A
 
 
 # FIXME: Revise this interface
 @functools.singledispatch
-def assemble_matrix_nest(a: typing.List[typing.List[form_types]],
-                         bcs: typing.List[DirichletBCMetaClass] = [], mat_types=[],
-                         diagonal: float = 1.0,
-                         constants=None, coeffs=None) -> PETSc.Mat:
-    """Assemble bilinear forms into matrix"""
-    A = _cpp.fem.petsc.create_matrix_nest(a, mat_types)
+def assemble_matrix_nest(
+    a: list[list[Form]],
+    bcs: list[DirichletBC] = [],
+    mat_types=[],
+    diagonal: float = 1.0,
+    constants=None,
+    coeffs=None,
+) -> PETSc.Mat:
+    """Create a nested matrix and assemble bilinear forms into the matrix.
+
+    Args:
+        a: Rectangular (list-of-lists) array for bilinear forms.
+        bcs: Dirichlet boundary conditions.
+        mat_types: PETSc matrix type for each matrix block.
+        diagonal: Value to set on matrix diagonal for Dirichlet boundary
+            condition constrained degrees-of-freedom.
+        constants: Constants appearing the in the form.
+        coeffs: Coefficients appearing the in the form.
+
+    Returns:
+        PETSc matrix (``MatNest``) representing the block of bilinear
+        forms.
+    """
+    _a = [[None if form is None else form._cpp_object for form in arow] for arow in a]
+    A = _cpp.fem.petsc.create_matrix_nest(_a, mat_types)
     _assemble_matrix_nest_mat(A, a, bcs, diagonal, constants, coeffs)
     return A
 
 
 @assemble_matrix_nest.register
-def _assemble_matrix_nest_mat(A: PETSc.Mat, a: typing.List[typing.List[form_types]],
-                              bcs: typing.List[DirichletBCMetaClass] = [], diagonal: float = 1.0,
-                              constants=None, coeffs=None) -> PETSc.Mat:
-    """Assemble bilinear forms into matrix"""
-    constants = [[form and _pack_constants(form) for form in forms]
-                 for forms in a] if constants is None else constants
-    coeffs = [[{} if form is None else _pack_coefficients(
-        form) for form in forms] for forms in a] if coeffs is None else coeffs
+def _assemble_matrix_nest_mat(
+    A: PETSc.Mat,
+    a: list[list[Form]],
+    bcs: list[DirichletBC] = [],
+    diagonal: float = 1.0,
+    constants=None,
+    coeffs=None,
+) -> PETSc.Mat:
+    """Assemble bilinear forms into a nested matrix
+
+    Args:
+        A: PETSc ``MatNest`` matrix. Matrix must have been correctly
+            initialized for the bilinear forms.
+        a: Rectangular (list-of-lists) array for bilinear forms.
+        bcs: Dirichlet boundary conditions.
+        mat_types: PETSc matrix type for each matrix block.
+        diagonal: Value to set on matrix diagonal for Dirichlet boundary
+            condition constrained degrees-of-freedom.
+        constants: Constants appearing the in the form.
+        coeffs: Coefficients appearing the in the form.
+
+    Returns:
+        PETSc matrix (``MatNest``) representing the block of bilinear
+        forms.
+    """
+    constants = (
+        [[form and _pack_constants(form._cpp_object) for form in forms] for forms in a]
+        if constants is None
+        else constants
+    )
+    coeffs = (
+        [
+            [{} if form is None else _pack_coefficients(form._cpp_object) for form in forms]
+            for forms in a
+        ]
+        if coeffs is None
+        else coeffs
+    )
     for i, (a_row, const_row, coeff_row) in enumerate(zip(a, constants, coeffs)):
         for j, (a_block, const, coeff) in enumerate(zip(a_row, const_row, coeff_row)):
             if a_block is not None:
                 Asub = A.getNestSubMatrix(i, j)
-                _assemble_matrix_mat(Asub, a_block, bcs, diagonal, const, coeff)
+                assemble_matrix_mat(Asub, a_block, bcs, diagonal, const, coeff)
             elif i == j:
                 for bc in bcs:
                     row_forms = [row_form for row_form in a_row if row_form is not None]
                     assert len(row_forms) > 0
                     if row_forms[0].function_spaces[0].contains(bc.function_space):
                         raise RuntimeError(
-                            f"Diagonal sub-block ({i}, {j}) cannot be 'None' and have DirichletBC applied."
-                            " Consider assembling a zero block.")
+                            f"Diagonal sub-block ({i}, {j}) cannot be 'None'"
+                            " and have DirichletBC applied."
+                            " Consider assembling a zero block."
+                        )
     return A
 
 
 # FIXME: Revise this interface
 @functools.singledispatch
-def assemble_matrix_block(a: typing.List[typing.List[form_types]],
-                          bcs: typing.List[DirichletBCMetaClass] = [],
-                          diagonal: float = 1.0,
-                          constants=None, coeffs=None) -> PETSc.Mat:  # type: ignore
-    """Assemble bilinear forms into matrix"""
-    A = _cpp.fem.petsc.create_matrix_block(a)
+def assemble_matrix_block(
+    a: list[list[Form]],
+    bcs: list[DirichletBC] = [],
+    diagonal: float = 1.0,
+    constants=None,
+    coeffs=None,
+) -> PETSc.Mat:  # type: ignore
+    """Assemble bilinear forms into a blocked matrix."""
+    _a = [[None if form is None else form._cpp_object for form in arow] for arow in a]
+    A = _cpp.fem.petsc.create_matrix_block(_a)
     return _assemble_matrix_block_mat(A, a, bcs, diagonal, constants, coeffs)
 
 
 @assemble_matrix_block.register
-def _assemble_matrix_block_mat(A: PETSc.Mat, a: typing.List[typing.List[form_types]],
-                               bcs: typing.List[DirichletBCMetaClass] = [], diagonal: float = 1.0,
-                               constants=None, coeffs=None) -> PETSc.Mat:
-    """Assemble bilinear forms into matrix"""
-
-    constants = [[form and _pack_constants(form) for form in forms]
-                 for forms in a] if constants is None else constants
-    coeffs = [[{} if form is None else _pack_coefficients(
-        form) for form in forms] for forms in a] if coeffs is None else coeffs
+def _assemble_matrix_block_mat(
+    A: PETSc.Mat,
+    a: list[list[Form]],
+    bcs: list[DirichletBC] = [],
+    diagonal: float = 1.0,
+    constants=None,
+    coeffs=None,
+) -> PETSc.Mat:
+    """Assemble bilinear forms into a blocked matrix."""
+    constants = (
+        [
+            [
+                _pack_constants(form._cpp_object)
+                if form is not None
+                else np.array([], dtype=PETSc.ScalarType)
+                for form in forms
+            ]
+            for forms in a
+        ]
+        if constants is None
+        else constants
+    )
+    coeffs = (
+        [
+            [{} if form is None else _pack_coefficients(form._cpp_object) for form in forms]
+            for forms in a
+        ]
+        if coeffs is None
+        else coeffs
+    )
 
     V = _extract_function_spaces(a)
-    is_rows = _cpp.la.petsc.create_index_sets([(Vsub.dofmap.index_map, Vsub.dofmap.index_map_bs) for Vsub in V[0]])
-    is_cols = _cpp.la.petsc.create_index_sets([(Vsub.dofmap.index_map, Vsub.dofmap.index_map_bs) for Vsub in V[1]])
+    is_rows = _cpp.la.petsc.create_index_sets(
+        [(Vsub.dofmap.index_map, Vsub.dofmap.index_map_bs) for Vsub in V[0]]
+    )
+    is_cols = _cpp.la.petsc.create_index_sets(
+        [(Vsub.dofmap.index_map, Vsub.dofmap.index_map_bs) for Vsub in V[1]]
+    )
 
     # Assemble form
+    _bcs = [bc._cpp_object for bc in bcs]
     for i, a_row in enumerate(a):
         for j, a_sub in enumerate(a_row):
             if a_sub is not None:
                 Asub = A.getLocalSubMatrix(is_rows[i], is_cols[j])
-                _cpp.fem.petsc.assemble_matrix(Asub, a_sub, constants[i][j], coeffs[i][j], bcs, True)
+                _cpp.fem.petsc.assemble_matrix(
+                    Asub, a_sub._cpp_object, constants[i][j], coeffs[i][j], _bcs, True
+                )
                 A.restoreLocalSubMatrix(is_rows[i], is_cols[j], Asub)
             elif i == j:
                 for bc in bcs:
@@ -435,8 +602,10 @@ def _assemble_matrix_block_mat(A: PETSc.Mat, a: typing.List[typing.List[form_typ
                     assert len(row_forms) > 0
                     if row_forms[0].function_spaces[0].contains(bc.function_space):
                         raise RuntimeError(
-                            f"Diagonal sub-block ({i}, {j}) cannot be 'None' and have DirichletBC applied."
-                            " Consider assembling a zero block.")
+                            f"Diagonal sub-block ({i}, {j}) cannot be 'None' "
+                            " and have DirichletBC applied."
+                            " Consider assembling a zero block."
+                        )
 
     # Flush to enable switch from add to set in the matrix
     A.assemble(PETSc.Mat.AssemblyType.FLUSH)
@@ -447,7 +616,7 @@ def _assemble_matrix_block_mat(A: PETSc.Mat, a: typing.List[typing.List[form_typ
             if a_sub is not None:
                 Asub = A.getLocalSubMatrix(is_rows[i], is_cols[j])
                 if a_sub.function_spaces[0] is a_sub.function_spaces[1]:
-                    _cpp.fem.petsc.insert_diagonal(Asub, a_sub.function_spaces[0], bcs, diagonal)
+                    _cpp.fem.petsc.insert_diagonal(Asub, a_sub.function_spaces[0], _bcs, diagonal)
                 A.restoreLocalSubMatrix(is_rows[i], is_cols[j], Asub)
 
     return A
@@ -455,46 +624,79 @@ def _assemble_matrix_block_mat(A: PETSc.Mat, a: typing.List[typing.List[form_typ
 
 # -- Modifiers for Dirichlet conditions ---------------------------------------
 
-def apply_lifting(b: PETSc.Vec, a: typing.List[form_types],
-                  bcs: typing.List[typing.List[DirichletBCMetaClass]],
-                  x0: typing.List[PETSc.Vec] = [],
-                  scale: float = 1.0, constants=None, coeffs=None) -> None:
+
+def apply_lifting(
+    b: PETSc.Vec,
+    a: list[Form],
+    bcs: list[list[DirichletBC]],
+    x0: list[PETSc.Vec] = [],
+    scale: float = 1.0,
+    constants=None,
+    coeffs=None,
+) -> None:
     """Apply the function :func:`dolfinx.fem.apply_lifting` to a PETSc Vector."""
     with contextlib.ExitStack() as stack:
         x0 = [stack.enter_context(x.localForm()) for x in x0]
         x0_r = [x.array_r for x in x0]
         b_local = stack.enter_context(b.localForm())
-        assemble.apply_lifting(b_local.array_w, a, bcs, x0_r, scale, constants, coeffs)
+        _assemble.apply_lifting(b_local.array_w, a, bcs, x0_r, scale, constants, coeffs)
 
 
-def apply_lifting_nest(b: PETSc.Vec, a: typing.List[typing.List[form_types]],
-                       bcs: typing.List[DirichletBCMetaClass],
-                       x0: typing.Optional[PETSc.Vec] = None,
-                       scale: float = 1.0, constants=None, coeffs=None) -> PETSc.Vec:
-    """Apply the function :func:`dolfinx.fem.apply_lifting` to each sub-vector in a nested PETSc Vector."""
-
+def apply_lifting_nest(
+    b: PETSc.Vec,
+    a: list[list[Form]],
+    bcs: list[DirichletBC],
+    x0: typing.Optional[PETSc.Vec] = None,
+    scale: float = 1.0,
+    constants=None,
+    coeffs=None,
+) -> PETSc.Vec:
+    """Apply the function :func:`dolfinx.fem.apply_lifting` to each sub-vector
+    in a nested PETSc Vector.
+    """
     x0 = [] if x0 is None else x0.getNestSubVecs()
     bcs1 = _bcs_by_block(_extract_spaces(a, 1), bcs)
-
-    constants = [[form and _pack_constants(form) for form in forms]
-                 for forms in a] if constants is None else constants
-    coeffs = [[{} if form is None else _pack_coefficients(
-        form) for form in forms] for forms in a] if coeffs is None else coeffs
+    constants = (
+        [
+            [
+                _pack_constants(form._cpp_object)
+                if form is not None
+                else np.array([], dtype=PETSc.ScalarType)
+                for form in forms
+            ]
+            for forms in a
+        ]
+        if constants is None
+        else constants
+    )
+    coeffs = (
+        [
+            [{} if form is None else _pack_coefficients(form._cpp_object) for form in forms]
+            for forms in a
+        ]
+        if coeffs is None
+        else coeffs
+    )
     for b_sub, a_sub, const, coeff in zip(b.getNestSubVecs(), a, constants, coeffs):
         apply_lifting(b_sub, a_sub, bcs1, x0, scale, const, coeff)
     return b
 
 
-def set_bc(b: PETSc.Vec, bcs: typing.List[DirichletBCMetaClass],
-           x0: typing.Optional[PETSc.Vec] = None, scale: float = 1.0) -> None:
+def set_bc(
+    b: PETSc.Vec, bcs: list[DirichletBC], x0: typing.Optional[PETSc.Vec] = None, scale: float = 1.0
+) -> None:
     """Apply the function :func:`dolfinx.fem.set_bc` to a PETSc Vector."""
     if x0 is not None:
         x0 = x0.array_r
-    assemble.set_bc(b.array_w, bcs, x0, scale)
+    _assemble.set_bc(b.array_w, bcs, x0, scale)
 
 
-def set_bc_nest(b: PETSc.Vec, bcs: typing.List[typing.List[DirichletBCMetaClass]],
-                x0: typing.Optional[PETSc.Vec] = None, scale: float = 1.0) -> None:
+def set_bc_nest(
+    b: PETSc.Vec,
+    bcs: list[list[DirichletBC]],
+    x0: typing.Optional[PETSc.Vec] = None,
+    scale: float = 1.0,
+) -> None:
     """Apply the function :func:`dolfinx.fem.set_bc` to each sub-vector of a nested PETSc Vector."""
     _b = b.getNestSubVecs()
     x0 = len(_b) * [None] if x0 is None else x0.getNestSubVecs()
@@ -503,18 +705,29 @@ def set_bc_nest(b: PETSc.Vec, bcs: typing.List[typing.List[DirichletBCMetaClass]
 
 
 class LinearProblem:
-    """Class for solving a linear variational problem of the form :math:`a(u, v) = L(v) \\,  \\forall v \\in V`
-    using PETSc as a linear algebra backend.
+    """Class for solving a linear variational problem.
 
+    Solves of the form :math:`a(u, v) = L(v) \\,  \\forall v \\in V`
+    using PETSc as a linear algebra backend.
     """
 
-    def __init__(self, a: ufl.Form, L: ufl.Form, bcs: typing.List[DirichletBCMetaClass] = [],
-                 u: typing.Optional[_Function] = None, petsc_options={}, form_compiler_options={}, jit_options={}):
+    def __init__(
+        self,
+        a: ufl.Form,
+        L: ufl.Form,
+        bcs: list[DirichletBC] = [],
+        u: typing.Optional[_Function] = None,
+        petsc_options: typing.Optional[dict] = None,
+        form_compiler_options: typing.Optional[dict] = None,
+        jit_options: typing.Optional[dict] = None,
+    ):
         """Initialize solver for a linear variational problem.
 
         Args:
-            a: A bilinear UFL form, the left hand side of the variational problem.
-            L: A linear UFL form, the right hand side of the variational problem.
+            a: A bilinear UFL form, the left hand side of the
+                variational problem.
+            L: A linear UFL form, the right hand side of the variational
+                problem.
             bcs: A list of Dirichlet boundary conditions.
             u: The solution function. It will be created if not provided.
             petsc_options: Options that are passed to the linear
@@ -531,15 +744,24 @@ class LinearProblem:
 
         Example::
 
-            problem = LinearProblem(a, L, [bc0, bc1],
-                                    petsc_options={"ksp_type": "preonly",
-                                                   "pc_type": "lu",
-                                                   "pc_factor_mat_solver_type": "mumps"})
+            problem = LinearProblem(a, L, [bc0, bc1], petsc_options={"ksp_type": "preonly",
+                                                                     "pc_type": "lu",
+                                                                     "pc_factor_mat_solver_type":
+                                                                       "mumps"})
         """
-        self._a = _create_form(a, form_compiler_options=form_compiler_options, jit_options=jit_options)
+        self._a = _create_form(
+            a,
+            dtype=PETSc.ScalarType,
+            form_compiler_options=form_compiler_options,
+            jit_options=jit_options,
+        )
         self._A = create_matrix(self._a)
-
-        self._L = _create_form(L, form_compiler_options=form_compiler_options, jit_options=jit_options)
+        self._L = _create_form(
+            L,
+            dtype=PETSc.ScalarType,
+            form_compiler_options=form_compiler_options,
+            jit_options=jit_options,
+        )
         self._b = create_vector(self._L)
 
         if u is None:
@@ -550,7 +772,7 @@ class LinearProblem:
         else:
             self.u = u
 
-        self._x = _cpp.la.petsc.create_vector_wrap(self.u.x)
+        self._x = la.create_petsc_vector_wrap(self.u.x)
         self.bcs = bcs
 
         self._solver = PETSc.KSP().create(self.u.function_space.mesh.comm)
@@ -563,8 +785,9 @@ class LinearProblem:
         # Set PETSc options
         opts = PETSc.Options()
         opts.prefixPush(problem_prefix)
-        for k, v in petsc_options.items():
-            opts[k] = v
+        if petsc_options is not None:
+            for k, v in petsc_options.items():
+                opts[k] = v
         opts.prefixPop()
         self._solver.setFromOptions()
 
@@ -574,12 +797,18 @@ class LinearProblem:
         self._b.setOptionsPrefix(problem_prefix)
         self._b.setFromOptions()
 
+    def __del__(self):
+        self._solver.destroy()
+        self._A.destroy()
+        self._b.destroy()
+        self._x.destroy()
+
     def solve(self) -> _Function:
         """Solve the problem."""
 
         # Assemble lhs
         self._A.zeroEntries()
-        _assemble_matrix_mat(self._A, self._a, bcs=self.bcs)
+        assemble_matrix_mat(self._A, self._a, bcs=self.bcs)
         self._A.assemble()
 
         # Assemble rhs
@@ -599,12 +828,12 @@ class LinearProblem:
         return self.u
 
     @property
-    def L(self) -> FormMetaClass:
+    def L(self) -> Form:
         """The compiled linear form"""
         return self._L
 
     @property
-    def a(self) -> FormMetaClass:
+    def a(self) -> Form:
         """The compiled bilinear form"""
         return self._a
 
@@ -625,15 +854,22 @@ class LinearProblem:
 
 
 class NonlinearProblem:
-    """Nonlinear problem class for solving the non-linear problem
-    :math:`F(u, v) = 0 \\ \\forall v \\in V` using PETSc as the linear algebra
-    backend.
+    """Nonlinear problem class for solving the non-linear problems.
 
+    Solves problems of the form :math:`F(u, v) = 0 \\ \\forall v \\in V` using
+    PETSc as the linear algebra backend.
     """
 
-    def __init__(self, F: ufl.form.Form, u: _Function, bcs: typing.List[DirichletBCMetaClass] = [],
-                 J: ufl.form.Form = None, form_compiler_options={}, jit_options={}):
-        """Initialize solver for solving a non-linear problem using Newton's method, :math:`dF/du(u) du = -F(u)`.
+    def __init__(
+        self,
+        F: ufl.form.Form,
+        u: _Function,
+        bcs: list[DirichletBC] = [],
+        J: ufl.form.Form = None,
+        form_compiler_options: typing.Optional[dict] = None,
+        jit_options: typing.Optional[dict] = None,
+    ):
+        """Initialize solver for solving a non-linear problem using Newton's method`.
 
         Args:
             F: The PDE residual F(u, v)
@@ -642,7 +878,7 @@ class NonlinearProblem:
             J: UFL representation of the Jacobian (Optional)
             form_compiler_options: Options used in FFCx
                 compilation of this form. Run ``ffcx --help`` at the
-                commandline to see all available options.
+                command line to see all available options.
             jit_options: Options used in CFFI JIT compilation of C
                 code generated by FFCx. See ``python/dolfinx/jit.py``
                 for all available options. Takes priority over all
@@ -651,10 +887,10 @@ class NonlinearProblem:
         Example::
 
             problem = LinearProblem(F, u, [bc0, bc1])
-
         """
-        self._L = _create_form(F, form_compiler_options=form_compiler_options,
-                               jit_options=jit_options)
+        self._L = _create_form(
+            F, form_compiler_options=form_compiler_options, jit_options=jit_options
+        )
 
         # Create the Jacobian matrix, dF/du
         if J is None:
@@ -662,37 +898,36 @@ class NonlinearProblem:
             du = ufl.TrialFunction(V)
             J = ufl.derivative(F, u, du)
 
-        self._a = _create_form(J, form_compiler_options=form_compiler_options,
-                               jit_options=jit_options)
+        self._a = _create_form(
+            J, form_compiler_options=form_compiler_options, jit_options=jit_options
+        )
         self.bcs = bcs
 
     @property
-    def L(self) -> FormMetaClass:
+    def L(self) -> Form:
         """Compiled linear form (the residual form)"""
         return self._L
 
     @property
-    def a(self) -> FormMetaClass:
+    def a(self) -> Form:
         """Compiled bilinear form (the Jacobian form)"""
         return self._a
 
-    def form(self, x: PETSc.Vec):
+    def form(self, x: PETSc.Vec) -> None:
         """This function is called before the residual or Jacobian is
         computed. This is usually used to update ghost values.
 
         Args:
            x: The vector containing the latest solution
-
         """
         x.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
 
-    def F(self, x: PETSc.Vec, b: PETSc.Vec):
+    def F(self, x: PETSc.Vec, b: PETSc.Vec) -> None:
         """Assemble the residual F into the vector b.
 
         Args:
             x: The vector containing the latest solution
             b: Vector to assemble the residual into
-
         """
         # Reset the residual vector
         with b.localForm() as b_local:
@@ -704,52 +939,43 @@ class NonlinearProblem:
         b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
         set_bc(b, self.bcs, x, -1.0)
 
-    def J(self, x: PETSc.Vec, A: PETSc.Mat):
+    def J(self, x: PETSc.Vec, A: PETSc.Mat) -> None:
         """Assemble the Jacobian matrix.
 
         Args:
             x: The vector containing the latest solution
-
         """
         A.zeroEntries()
-        _assemble_matrix_mat(A, self._a, self.bcs)
+        assemble_matrix_mat(A, self._a, self.bcs)
         A.assemble()
 
 
-def load_petsc_lib(loader: typing.Callable[[str], typing.Any]) -> typing.Any:
-    """
-    Load PETSc shared library using loader callable, e.g. ctypes.CDLL.
+def discrete_gradient(space0: _FunctionSpace, space1: _FunctionSpace) -> PETSc.Mat:
+    """Assemble a discrete gradient operator.
+
+    The discrete gradient operator interpolates the gradient of a H1
+    finite element function into a H(curl) space. It is assumed that the
+    H1 space uses an identity map and the H(curl) space uses a covariant
+    Piola map.
 
     Args:
-        loader: A callable that accepts a library path and returns a wrapped library.
+        space0: H1 space to interpolate the gradient from.
+        space1: H(curl) space to interpolate into.
 
     Returns:
-        A wrapped library of the type returned by the callable.
+        Discrete gradient operator.
     """
-    petsc_lib = None
+    return _discrete_gradient(space0._cpp_object, space1._cpp_object)
 
-    petsc_dir = petsc4py.get_config()['PETSC_DIR']
-    petsc_arch = petsc4py.lib.getPathArchPETSc()[1]
 
-    candidate_paths = [os.path.join(petsc_dir, petsc_arch, "lib", "libpetsc.so"),
-                       os.path.join(petsc_dir, petsc_arch, "lib", "libpetsc.dylib")]
+def interpolation_matrix(space0: _FunctionSpace, space1: _FunctionSpace) -> PETSc.Mat:
+    """Assemble an interpolation operator matrix.
 
-    exists_paths = []
-    for candidate_path in candidate_paths:
-        if os.path.exists(candidate_path):
-            exists_paths.append(candidate_path)
+    Args:
+        space0: Space to interpolate from.
+        space1: Space to interpolate into.
 
-    if len(exists_paths) == 0:
-        raise RuntimeError("Could not find a PETSc shared library.")
-
-    for exists_path in exists_paths:
-        try:
-            petsc_lib = loader(exists_path)
-        except OSError:
-            print(f"Failed to load shared library found at {exists_path}.")
-            continue
-
-    if petsc_lib is None:
-        raise RuntimeError("Failed to load a PETSc shared library.")
-
-    return petsc_lib
+    Returns:
+        Interpolation matrix.
+    """
+    return _interpolation_matrix(space0._cpp_object, space1._cpp_object)

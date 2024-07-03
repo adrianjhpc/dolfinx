@@ -22,25 +22,40 @@
 #
 # The required modules are first imported:
 
+from mpi4py import MPI
+
+try:
+    from petsc4py import PETSc
+
+    import dolfinx
+
+    if not dolfinx.has_petsc:
+        print("This demo requires DOLFINx to be compiled with PETSc enabled.")
+        exit(0)
+except ModuleNotFoundError:
+    print("This demo requires petsc4py.")
+    exit(0)
+
 # +
 import numpy as np
 
 import ufl
 from dolfinx import la
-from dolfinx.fem import (Expression, Function, FunctionSpace,
-                         VectorFunctionSpace, dirichletbc, form,
-                         locate_dofs_topological)
-from dolfinx.fem.petsc import (apply_lifting, assemble_matrix, assemble_vector,
-                               set_bc)
+from dolfinx.fem import (
+    Expression,
+    Function,
+    FunctionSpace,
+    dirichletbc,
+    form,
+    functionspace,
+    locate_dofs_topological,
+)
+from dolfinx.fem.petsc import apply_lifting, assemble_matrix, assemble_vector, set_bc
 from dolfinx.io import XDMFFile
-from dolfinx.mesh import (CellType, GhostMode, create_box,
-                          locate_entities_boundary)
+from dolfinx.mesh import CellType, GhostMode, create_box, locate_entities_boundary
 from ufl import dx, grad, inner
 
-from mpi4py import MPI
-from petsc4py import PETSc
-
-dtype = PETSc.ScalarType
+dtype = PETSc.ScalarType  # type: ignore
 # -
 
 # ## Create the operator near-nullspace
@@ -53,40 +68,40 @@ dtype = PETSc.ScalarType
 # modes.
 
 
-def build_nullspace(V):
+def build_nullspace(V: FunctionSpace):
     """Build PETSc nullspace for 3D elasticity"""
 
     # Create vectors that will span the nullspace
     bs = V.dofmap.index_map_bs
     length0 = V.dofmap.index_map.size_local
-    length1 = length0 + V.dofmap.index_map.num_ghosts
-    basis = [np.zeros(bs * length1, dtype=dtype) for i in range(6)]
+    basis = [la.vector(V.dofmap.index_map, bs=bs, dtype=dtype) for i in range(6)]
+    b = [b.array for b in basis]
 
     # Get dof indices for each subspace (x, y and z dofs)
-    dofs = [V.sub(i).dofmap.list.array for i in range(3)]
+    dofs = [V.sub(i).dofmap.list.flatten() for i in range(3)]
 
     # Set the three translational rigid body modes
     for i in range(3):
-        basis[i][dofs[i]] = 1.0
+        b[i][dofs[i]] = 1.0
 
     # Set the three rotational rigid body modes
     x = V.tabulate_dof_coordinates()
-    dofs_block = V.dofmap.list.array
+    dofs_block = V.dofmap.list.flatten()
     x0, x1, x2 = x[dofs_block, 0], x[dofs_block, 1], x[dofs_block, 2]
-    basis[3][dofs[0]] = -x1
-    basis[3][dofs[1]] = x0
-    basis[4][dofs[0]] = x2
-    basis[4][dofs[2]] = -x0
-    basis[5][dofs[2]] = x1
-    basis[5][dofs[1]] = -x2
+    b[3][dofs[0]] = -x1
+    b[3][dofs[1]] = x0
+    b[4][dofs[0]] = x2
+    b[4][dofs[2]] = -x0
+    b[5][dofs[2]] = x1
+    b[5][dofs[1]] = -x2
 
-    # Create PETSc Vec objects (excluding ghosts) and normalise
-    basis_petsc = [PETSc.Vec().createWithArray(x[:bs * length0], bsize=3, comm=V.mesh.comm) for x in basis]
-    la.orthonormalize(basis_petsc)
-    assert la.is_orthonormal(basis_petsc)
+    la.orthonormalize(basis)
 
-    # Create and return a PETSc nullspace
-    return PETSc.NullSpace().create(vectors=basis_petsc)
+    basis_petsc = [
+        PETSc.Vec().createWithArray(x[: bs * length0], bsize=3, comm=V.mesh.comm)  # type: ignore
+        for x in b
+    ]
+    return PETSc.NullSpace().create(vectors=basis_petsc)  # type: ignore
 
 
 # ## Problem definition
@@ -94,9 +109,13 @@ def build_nullspace(V):
 # Create a box Mesh:
 
 
-msh = create_box(MPI.COMM_WORLD, [np.array([0.0, 0.0, 0.0]),
-                                  np.array([2.0, 1.0, 1.0])], [16, 16, 16],
-                 CellType.tetrahedron, GhostMode.shared_facet)
+msh = create_box(
+    MPI.COMM_WORLD,
+    [np.array([0.0, 0.0, 0.0]), np.array([2.0, 1.0, 1.0])],
+    [16, 16, 16],
+    CellType.tetrahedron,
+    ghost_mode=GhostMode.shared_facet,
+)
 
 # Create a centripetal source term $f = \rho \omega^2 [x_0, \, x_1]$:
 
@@ -117,13 +136,15 @@ E = 1.0e9
 def σ(v):
     """Return an expression for the stress σ given a displacement field"""
     return 2.0 * μ * ufl.sym(grad(v)) + λ * ufl.tr(ufl.sym(grad(v))) * ufl.Identity(len(v))
+
+
 # -
 
 # A function space space is created and the elasticity variational
 # problem defined:
 
 
-V = VectorFunctionSpace(msh, ("Lagrange", 1))
+V = functionspace(msh, ("Lagrange", 1, (msh.geometry.dim,)))
 u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
 a = form(inner(σ(u), grad(v)) * dx)
 L = form(inner(f, v) * dx)
@@ -132,11 +153,12 @@ L = form(inner(f, v) * dx)
 # $x_1 = 1$ by finding all facets on these boundaries, and then creating
 # a Dirichlet boundary condition object.
 
-facets = locate_entities_boundary(msh, dim=2,
-                                  marker=lambda x: np.logical_or(np.isclose(x[0], 0.0),
-                                                                 np.isclose(x[1], 1.0)))
-bc = dirichletbc(np.zeros(3, dtype=dtype),
-                 locate_dofs_topological(V, entity_dim=2, entities=facets), V=V)
+facets = locate_entities_boundary(
+    msh, dim=2, marker=lambda x: np.isclose(x[0], 0.0) | np.isclose(x[1], 1.0)
+)
+bc = dirichletbc(
+    np.zeros(3, dtype=dtype), locate_dofs_topological(V, entity_dim=2, entities=facets), V=V
+)
 
 # ## Assemble and solve
 #
@@ -160,7 +182,7 @@ A.assemble()
 # +
 b = assemble_vector(L)
 apply_lifting(b, [a], bcs=[[bc]])
-b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)  # type: ignore
 set_bc(b, [bc])
 # -
 
@@ -168,15 +190,16 @@ set_bc(b, [bc])
 
 ns = build_nullspace(V)
 A.setNearNullSpace(ns)
+A.setOption(PETSc.Mat.Option.SPD, True)  # type: ignore
 
 # Set PETSc solver options, create a PETSc Krylov solver, and attach the
 # matrix `A` to the solver:
 
 # +
 # Set solver options
-opts = PETSc.Options()
+opts = PETSc.Options()  # type: ignore
 opts["ksp_type"] = "cg"
-opts["ksp_rtol"] = 1.0e-10
+opts["ksp_rtol"] = 1.0e-8
 opts["pc_type"] = "gamg"
 
 # Use Chebyshev smoothing for multigrid
@@ -184,11 +207,10 @@ opts["mg_levels_ksp_type"] = "chebyshev"
 opts["mg_levels_pc_type"] = "jacobi"
 
 # Improve estimate of eigenvalues for Chebyshev smoothing
-opts["mg_levels_esteig_ksp_type"] = "cg"
-opts["mg_levels_ksp_chebyshev_esteig_steps"] = 20
+opts["mg_levels_ksp_chebyshev_esteig_steps"] = 10
 
 # Create PETSc Krylov solver and turn convergence monitoring on
-solver = PETSc.KSP().create(msh.comm)
+solver = PETSc.KSP().create(msh.comm)  # type: ignore
 solver.setFromOptions()
 
 # Set matrix operator
@@ -204,7 +226,7 @@ uh = Function(V)
 # Set a monitor, solve linear system, and display the solver
 # configuration
 solver.setMonitor(lambda _, its, rnorm: print(f"Iteration: {its}, rel. residual: {rnorm}"))
-solver.solve(b, uh.vector)
+solver.solve(b, uh.x.petsc_vec)
 solver.view()
 
 # Scatter forward the solution vector to update ghost values
@@ -227,7 +249,7 @@ sigma_vm = ufl.sqrt((3 / 2) * inner(sigma_dev, sigma_dev))
 # {py:class}`Function<dolfinx.fem.Function>` `sigma_vm_h`.
 
 # +
-W = FunctionSpace(msh, ("Discontinuous Lagrange", 0))
+W = functionspace(msh, ("Discontinuous Lagrange", 0))
 sigma_vm_expr = Expression(sigma_vm, W.element.interpolation_points())
 sigma_vm_h = Function(W)
 sigma_vm_h.interpolate(sigma_vm_expr)
@@ -252,7 +274,7 @@ with XDMFFile(msh.comm, "out_elasticity/von_mises_stress.xdmf", "w") as file:
 # be called from all MPI ranks), but we print the norm only on rank 0.
 
 # +
-unorm = uh.x.norm()
+unorm = la.norm(uh.x)
 if msh.comm.rank == 0:
     print("Solution vector norm:", unorm)
 # -

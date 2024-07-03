@@ -1,4 +1,4 @@
-// Copyright (C) 2007-2019 Garth N. Wells
+// Copyright (C) 2007-2023 Garth N. Wells
 //
 // This file is part of DOLFINx (https://www.fenicsproject.org)
 //
@@ -6,147 +6,56 @@
 
 #include "sparsitybuild.h"
 #include "DofMap.h"
-#include <dolfinx/common/IndexMap.h>
-#include <dolfinx/graph/AdjacencyList.h>
 #include <dolfinx/la/SparsityPattern.h>
-#include <dolfinx/mesh/Topology.h>
 
 using namespace dolfinx;
 using namespace dolfinx::fem;
 
 //-----------------------------------------------------------------------------
 void sparsitybuild::cells(
-    la::SparsityPattern& pattern, const mesh::Topology& topology,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps)
+    la::SparsityPattern& pattern,
+    std::array<std::span<const std::int32_t>, 2> cells,
+    std::array<std::reference_wrapper<const DofMap>, 2> dofmaps)
 {
-  const int D = topology.dim();
-  auto cells = topology.connectivity(D, 0);
-  assert(cells);
-  for (int c = 0; c < cells->num_nodes(); ++c)
-  {
-    pattern.insert(dofmaps[0].get().cell_dofs(c),
-                   dofmaps[1].get().cell_dofs(c));
-  }
-}
-//-----------------------------------------------------------------------------
-void sparsitybuild::cells(
-    la::SparsityPattern& pattern, const std::span<const std::int32_t>& cells,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps)
-{
-  for (std::int32_t c : cells)
-  {
-    pattern.insert(dofmaps[0].get().cell_dofs(c),
-                   dofmaps[1].get().cell_dofs(c));
-  }
+  assert(cells[0].size() == cells[1].size());
+  const DofMap& map0 = dofmaps[0].get();
+  const DofMap& map1 = dofmaps[1].get();
+  for (std::size_t i = 0; i < cells[0].size(); ++i)
+    pattern.insert(map0.cell_dofs(cells[0][i]), map1.cell_dofs(cells[1][i]));
 }
 //-----------------------------------------------------------------------------
 void sparsitybuild::interior_facets(
-    la::SparsityPattern& pattern, const mesh::Topology& topology,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps)
+    la::SparsityPattern& pattern,
+    std::array<std::span<const std::int32_t>, 2> cells,
+    std::array<std::reference_wrapper<const DofMap>, 2> dofmaps)
 {
-  const int D = topology.dim();
-  if (!topology.connectivity(D - 1, 0))
-    throw std::runtime_error("Topology facets have not been created.");
+  std::span<const std::int32_t> cells0 = cells[0];
+  std::span<const std::int32_t> cells1 = cells[1];
+  assert(cells0.size() == cells1.size());
+  const DofMap& dofmap0 = dofmaps[0];
+  const DofMap& dofmap1 = dofmaps[1];
 
-  auto connectivity = topology.connectivity(D - 1, D);
-  if (!connectivity)
-    throw std::runtime_error("Facet-cell connectivity has not been computed.");
-
-  // Array to store macro-dofs, if required (for interior facets)
-  std::array<std::vector<std::int32_t>, 2> macro_dofs;
-
-  // Loop over owned facets
-  auto map = topology.index_map(D - 1);
-  assert(map);
-  const std::int32_t num_facets = map->size_local();
-  for (int f = 0; f < num_facets; ++f)
+  // Iterate over facets
+  std::vector<std::int32_t> macro_dofs0, macro_dofs1;
+  for (std::size_t f = 0; f < cells[0].size(); f += 2)
   {
-    // Get cells incident with facet
-    auto cells = connectivity->links(f);
+    // Test function dofs (sparsity pattern rows)
+    auto dofs00 = dofmap0.cell_dofs(cells0[f]);
+    auto dofs01 = dofmap0.cell_dofs(cells0[f + 1]);
+    macro_dofs0.resize(dofs00.size() + dofs01.size());
+    std::copy(dofs00.begin(), dofs00.end(), macro_dofs0.begin());
+    std::copy(dofs01.begin(), dofs01.end(),
+              std::next(macro_dofs0.begin(), dofs00.size()));
 
-    // Proceed to next facet if only connection
-    if (cells.size() == 1)
-      continue;
+    // Trial function dofs (sparsity pattern columns)
+    auto dofs10 = dofmap1.cell_dofs(cells1[f]);
+    auto dofs11 = dofmap1.cell_dofs(cells1[f + 1]);
+    macro_dofs1.resize(dofs10.size() + dofs11.size());
+    std::copy(dofs10.begin(), dofs10.end(), macro_dofs1.begin());
+    std::copy(dofs11.begin(), dofs11.end(),
+              std::next(macro_dofs1.begin(), dofs10.size()));
 
-    // Tabulate dofs for each dimension on macro element
-    assert(cells.size() == 2);
-    const int cell0 = cells[0];
-    const int cell1 = cells[1];
-    for (std::size_t i = 0; i < 2; i++)
-    {
-      auto cell_dofs0 = dofmaps[i].get().cell_dofs(cell0);
-      auto cell_dofs1 = dofmaps[i].get().cell_dofs(cell1);
-      macro_dofs[i].resize(cell_dofs0.size() + cell_dofs1.size());
-      std::copy(cell_dofs0.begin(), cell_dofs0.end(), macro_dofs[i].begin());
-      std::copy(cell_dofs1.begin(), cell_dofs1.end(),
-                std::next(macro_dofs[i].begin(), cell_dofs0.size()));
-    }
-
-    pattern.insert(macro_dofs[0], macro_dofs[1]);
-  }
-}
-//-----------------------------------------------------------------------------
-void sparsitybuild::interior_facets(
-    la::SparsityPattern& pattern, const std::span<const std::int32_t>& facets,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps)
-{
-  std::array<std::vector<std::int32_t>, 2> macro_dofs;
-  for (std::size_t index = 0; index < facets.size(); index += 4)
-  {
-    const int cell_0 = facets[index];
-    const int cell_1 = facets[index + 2];
-    for (std::size_t i = 0; i < 2; ++i)
-    {
-      auto cell_dofs_0 = dofmaps[i].get().cell_dofs(cell_0);
-      auto cell_dofs_1 = dofmaps[i].get().cell_dofs(cell_1);
-      macro_dofs[i].resize(cell_dofs_0.size() + cell_dofs_1.size());
-      std::copy(cell_dofs_0.begin(), cell_dofs_0.end(), macro_dofs[i].begin());
-      std::copy(cell_dofs_1.begin(), cell_dofs_1.end(),
-                std::next(macro_dofs[i].begin(), cell_dofs_0.size()));
-    }
-
-    pattern.insert(macro_dofs[0], macro_dofs[1]);
-  }
-}
-//-----------------------------------------------------------------------------
-void sparsitybuild::exterior_facets(
-    la::SparsityPattern& pattern, const mesh::Topology& topology,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps)
-{
-  const int D = topology.dim();
-  if (!topology.connectivity(D - 1, 0))
-    throw std::runtime_error("Topology facets have not been created.");
-
-  auto connectivity = topology.connectivity(D - 1, D);
-  if (!connectivity)
-    throw std::runtime_error("Facet-cell connectivity has not been computed.");
-
-  // Loop over owned facets
-  auto map = topology.index_map(D - 1);
-  assert(map);
-  const std::int32_t num_facets = map->size_local();
-  for (int f = 0; f < num_facets; ++f)
-  {
-    // Proceed to next facet if we have an interior facet
-    if (connectivity->num_links(f) == 2)
-      continue;
-
-    auto cells = connectivity->links(f);
-    assert(cells.size() == 1);
-    pattern.insert(dofmaps[0].get().cell_dofs(cells[0]),
-                   dofmaps[1].get().cell_dofs(cells[0]));
-  }
-}
-//-----------------------------------------------------------------------------
-void sparsitybuild::exterior_facets(
-    la::SparsityPattern& pattern, const std::span<const std::int32_t>& facets,
-    const std::array<const std::reference_wrapper<const DofMap>, 2>& dofmaps)
-{
-  for (std::size_t index = 0; index < facets.size(); index += 2)
-  {
-    std::int32_t cell = facets[index];
-    pattern.insert(dofmaps[0].get().cell_dofs(cell),
-                   dofmaps[1].get().cell_dofs(cell));
+    pattern.insert(macro_dofs0, macro_dofs1);
   }
 }
 //-----------------------------------------------------------------------------

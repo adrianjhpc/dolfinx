@@ -2,7 +2,7 @@
 #
 # python cmake/scripts/generate-cmakefiles from dolfinx/cpp
 #
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.19)
 
 set(PROJECT_NAME demo_poisson_matrix_free)
 project(${PROJECT_NAME} LANGUAGES C CXX)
@@ -19,10 +19,21 @@ endif()
 include(CheckSymbolExists)
 set(CMAKE_REQUIRED_INCLUDES ${PETSC_INCLUDE_DIRS})
 check_symbol_exists(PETSC_USE_COMPLEX petscsystypes.h PETSC_SCALAR_COMPLEX)
+check_symbol_exists(PETSC_USE_REAL_DOUBLE petscsystypes.h PETSC_REAL_DOUBLE)
 
 # Add target to compile UFL files
 if(PETSC_SCALAR_COMPLEX EQUAL 1)
-  set(SCALAR_TYPE "--scalar_type=double _Complex")
+  if(PETSC_REAL_DOUBLE EQUAL 1)
+    set(SCALAR_TYPE "--scalar_type=complex128")
+  else()
+    set(SCALAR_TYPE "--scalar_type=complex64")
+  endif()
+else()
+  if(PETSC_REAL_DOUBLE EQUAL 1)
+    set(SCALAR_TYPE "--scalar_type=float64")
+  else()
+    set(SCALAR_TYPE "--scalar_type=float32")
+  endif()
 endif()
 add_custom_command(
   OUTPUT poisson.c

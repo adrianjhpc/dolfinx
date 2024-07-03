@@ -18,28 +18,18 @@
 # We begin this demo by importing the required modules.
 
 # +
+from mpi4py import MPI
+
 import matplotlib.pylab as plt
-import numpy as np
 
 import basix
-import basix.ufl_wrapper
-import ufl
-from dolfinx import fem, mesh
-from ufl import ds, dx, grad, inner
+import basix.ufl
+import ufl  # type: ignore
+from dolfinx import default_real_type, fem, mesh
+from ufl import dx
 
-from mpi4py import MPI
-from petsc4py.PETSc import ScalarType
-
-if np.issubdtype(ScalarType, np.complexfloating):
-    print("Demo should only be executed with DOLFINx real mode")
-    exit(0)
 # -
 
-# Note that Basix and the Basix UFL wrapper are imported directly. Basix
-# is the element definition and tabulation library that is used by
-# FEniCSx.
-#
-#
 # ## Equispaced versus Gauss--Lobatto--Legendre (GLL) points
 #
 # The basis functions of a Lagrange element are defined by placing
@@ -47,23 +37,27 @@ if np.issubdtype(ScalarType, np.complexfloating):
 # at one point and 0 at all the other points. To demonstrate the
 # influence of interpolation point position, we create a degree 10
 # element on an interval using equally spaced points, and plot the basis
-# functions. We create this element using Basix's
-# [`create_element`](https://docs.fenicsproject.org/basix/main/python/demo/demo_create_and_tabulate.py.html)
-# function. Basix's function `element.tabulate` returns a 4-dimensional
-# array with shape (derivatives, points, basis functions, value size).
+# functions. We create this element using `basix.ufl`'s
+# `element` function. The function `element.tabulate` returns a 3-dimensional
+# array with shape (derivatives, points, (value size) * (basis functions)).
 # In this example, we only tabulate the 0th derivative and the value
-# size is 1, so we take the slice `[0, :, :, 0]` to get a 2-dimensional
+# size is 1, so we take the slice `[0, :, :]` to get a 2-dimensional
 # array.
 
 # +
-element = basix.create_element(basix.ElementFamily.P, basix.CellType.interval, 10,
-                               basix.LagrangeVariant.equispaced)
-pts = basix.create_lattice(basix.CellType.interval, 200, basix.LatticeType.equispaced, True)
-values = element.tabulate(0, pts)[0, :, :, 0]
-if MPI.COMM_WORLD.size == 1:  # Skip this plotting in parallel
+element = basix.ufl.element(
+    basix.ElementFamily.P,
+    basix.CellType.interval,
+    10,
+    basix.LagrangeVariant.equispaced,
+    dtype=default_real_type,
+)
+lattice = basix.create_lattice(basix.CellType.interval, 200, basix.LatticeType.equispaced, True)
+values = element.tabulate(0, lattice)[0, :, :]
+if MPI.COMM_WORLD.size == 1:
     for i in range(values.shape[1]):
-        plt.plot(pts, values[:, i])
-    plt.plot(element.points, [0 for _ in element.points], "ko")
+        plt.plot(lattice, values[:, i])
+    plt.plot(element._element.points, [0] * 11, "ko")
     plt.ylim([-1, 6])
     plt.savefig("demo_lagrange_variants_equispaced_10.png")
     plt.clf()
@@ -84,13 +78,18 @@ if MPI.COMM_WORLD.size == 1:  # Skip this plotting in parallel
 # to define the basis functions.
 
 # +
-element = basix.create_element(basix.ElementFamily.P, basix.CellType.interval, 10,
-                               basix.LagrangeVariant.gll_warped)
-values = element.tabulate(0, pts)[0, :, :, 0]
+element = basix.ufl.element(
+    basix.ElementFamily.P,
+    basix.CellType.interval,
+    10,
+    basix.LagrangeVariant.gll_warped,
+    dtype=default_real_type,
+)
+values = element.tabulate(0, lattice)[0, :, :]
 if MPI.COMM_WORLD.size == 1:  # Skip this plotting in parallel
     for i in range(values.shape[1]):
-        plt.plot(pts, values[:, i])
-    plt.plot(element.points, [0 for _ in element.points], "ko")
+        plt.plot(lattice, values[:, i])
+    plt.plot(element._element.points, [0] * 11, "ko")
     plt.ylim([-1, 6])
     plt.savefig("demo_lagrange_variants_gll_10.png")
     plt.clf()
@@ -102,42 +101,6 @@ if MPI.COMM_WORLD.size == 1:  # Skip this plotting in parallel
 # The points are clustered towards the endpoints of the interval, and
 # the basis functions do not exhibit Runge's phenomenon.
 #
-# ## Wrapping a Basix element
-#
-# Elements created using Basix can be used directly with UFL via Basix's
-# UFL wrapper.
-
-element = basix.create_element(basix.ElementFamily.P, basix.CellType.triangle, 3,
-                               basix.LagrangeVariant.gll_warped)
-ufl_element = basix.ufl_wrapper.BasixElement(element)
-
-# The UFL element `ufl_element` can be used in the same way as an
-# element created directly in UFL. For example, we could [solve a
-# Poisson problem](demo_poisson) using this element.
-
-# +
-msh = mesh.create_rectangle(comm=MPI.COMM_WORLD,
-                            points=((0.0, 0.0), (2.0, 1.0)), n=(32, 16),
-                            cell_type=mesh.CellType.triangle,)
-V = fem.FunctionSpace(msh, ufl_element)
-facets = mesh.locate_entities_boundary(msh, dim=1,
-                                       marker=lambda x: np.logical_or(np.isclose(x[0], 0.0),
-                                                                      np.isclose(x[0], 2.0)))
-dofs = fem.locate_dofs_topological(V=V, entity_dim=1, entities=facets)
-bc = fem.dirichletbc(value=ScalarType(0), dofs=dofs, V=V)
-
-u = ufl.TrialFunction(V)
-v = ufl.TestFunction(V)
-x = ufl.SpatialCoordinate(msh)
-f = 10 * ufl.exp(-((x[0] - 0.5) ** 2 + (x[1] - 0.5) ** 2) / 0.02)
-g = ufl.sin(5 * x[0])
-a = inner(grad(u), grad(v)) * dx
-L = inner(f, v) * dx + inner(g, v) * ds
-
-problem = fem.petsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
-uh = problem.solve()
-# -
-
 # ## Computing the error of an interpolation
 #
 # To demonstrate how the choice of Lagrange variant can affect
@@ -163,14 +126,15 @@ x = ufl.SpatialCoordinate(msh)
 u_exact = saw_tooth(x[0])
 
 for variant in [basix.LagrangeVariant.equispaced, basix.LagrangeVariant.gll_warped]:
-    element = basix.create_element(basix.ElementFamily.P, basix.CellType.interval, 10, variant)
-    ufl_element = basix.ufl_wrapper.BasixElement(element)
-    V = fem.FunctionSpace(msh, ufl_element)
+    ufl_element = basix.ufl.element(
+        basix.ElementFamily.P, basix.CellType.interval, 10, variant, dtype=default_real_type
+    )
+    V = fem.functionspace(msh, ufl_element)
     uh = fem.Function(V)
     uh.interpolate(lambda x: saw_tooth(x[0]))
     if MPI.COMM_WORLD.size == 1:  # Skip this plotting in parallel
-        pts = []
-        cells = []
+        pts: list[list[float]] = []
+        cells: list[int] = []
         for cell in range(10):
             for i in range(51):
                 pts.append([cell / 10 + i / 50 / 10, 0, 0])
@@ -203,14 +167,15 @@ for variant in [basix.LagrangeVariant.equispaced, basix.LagrangeVariant.gll_warp
 
 # +
 for variant in [basix.LagrangeVariant.equispaced, basix.LagrangeVariant.gll_warped]:
-    element = basix.create_element(basix.ElementFamily.P, basix.CellType.interval, 10, variant)
-    ufl_element = basix.ufl_wrapper.BasixElement(element)
-    V = fem.FunctionSpace(msh, ufl_element)
+    ufl_element = basix.ufl.element(
+        basix.ElementFamily.P, basix.CellType.interval, 10, variant, dtype=default_real_type
+    )
+    V = fem.functionspace(msh, ufl_element)
     uh = fem.Function(V)
     uh.interpolate(lambda x: saw_tooth(x[0]))
-    M = fem.form((u_exact - uh)**2 * dx)
+    M = fem.form((u_exact - uh) ** 2 * dx)
     error = msh.comm.allreduce(fem.assemble_scalar(M), op=MPI.SUM)
-    print(f"Computed L2 interpolation error ({variant.name}):", error ** 0.5)
+    print(f"Computed L2 interpolation error ({variant.name}):", error**0.5)
 # -
 
 # ## Available Lagrange variants

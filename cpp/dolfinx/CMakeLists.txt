@@ -65,6 +65,14 @@ target_compile_options(
 # Add version to definitions (public)
 target_compile_definitions(dolfinx PUBLIC DOLFINX_VERSION="${DOLFINX_VERSION}")
 
+# MSVC does not support the optional C99 _Complex type. Consequently, ufcx.h
+# does not contain tabulate_tensor_complex* functions when built with MSVC. On
+# MSVC this DOLFINX macro is set and this removes all calls to
+# tabulate_tensor_complex*.
+if(MSVC)
+  target_compile_definitions(dolfinx PUBLIC DOLFINX_NO_STDC_COMPLEX_KERNELS)
+endif()
+
 # ------------------------------------------------------------------------------
 # Add include directories and libraries of required packages
 
@@ -92,19 +100,10 @@ target_link_libraries(dolfinx PUBLIC Boost::timer)
 # MPI
 target_link_libraries(dolfinx PUBLIC MPI::MPI_CXX)
 
-# PETSc
-target_link_libraries(dolfinx PUBLIC PkgConfig::PETSC)
+target_link_libraries(dolfinx PUBLIC spdlog::spdlog)
 
 # HDF5
-if(TARGET hdf5::hdf5)
-  target_link_libraries(dolfinx PUBLIC hdf5::hdf5)
-else()
-  # This is the old-style CMake (3.18 and earlier), remove when no longer
-  # supporting older CMake
-  target_compile_definitions(dolfinx PUBLIC ${HDF5_DEFINITIONS})
-  target_link_libraries(dolfinx PUBLIC ${HDF5_C_LIBRARIES})
-  target_include_directories(dolfinx SYSTEM PUBLIC ${HDF5_INCLUDE_DIRS})
-endif()
+target_link_libraries(dolfinx PUBLIC hdf5::hdf5)
 
 # ------------------------------------------------------------------------------
 # Optional packages
@@ -112,7 +111,13 @@ endif()
 # ADIOS2
 if(ADIOS2_FOUND)
   target_compile_definitions(dolfinx PUBLIC HAS_ADIOS2)
-  target_link_libraries(dolfinx PRIVATE adios2::cxx11_mpi)
+  target_link_libraries(dolfinx PUBLIC adios2::cxx11_mpi)
+endif()
+
+# PETSc
+if(DOLFINX_ENABLE_PETSC AND PETSC_FOUND)
+  target_link_libraries(dolfinx PUBLIC PkgConfig::PETSC)
+  target_compile_definitions(dolfinx PUBLIC HAS_PETSC)
 endif()
 
 # SLEPC
@@ -124,8 +129,10 @@ endif()
 # SCOTCH
 if(DOLFINX_ENABLE_SCOTCH AND SCOTCH_FOUND)
   target_compile_definitions(dolfinx PUBLIC HAS_PTSCOTCH)
-  target_link_libraries(dolfinx PRIVATE ${SCOTCH_LIBRARIES})
-  target_include_directories(dolfinx SYSTEM PRIVATE ${SCOTCH_INCLUDE_DIRS})
+  target_link_libraries(dolfinx PRIVATE SCOTCH::ptscotch)
+  if(TARGET SCOTCH::scotcherr)
+    target_link_libraries(dolfinx PRIVATE SCOTCH::scotcherr)
+  endif()
 endif()
 
 # ParMETIS
@@ -144,13 +151,41 @@ endif()
 
 # ------------------------------------------------------------------------------
 # Install dolfinx library and header files
-install(
-  TARGETS dolfinx
-  EXPORT DOLFINXTargets
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT RuntimeExecutables
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT RuntimeLibraries
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Development
-)
+if(WIN32)
+  install(
+    TARGETS dolfinx
+    EXPORT DOLFINXTargets
+    RUNTIME_DEPENDENCY_SET dependencies
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT RuntimeExecutables
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT RuntimeLibraries
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Development
+  )
+
+  if(INSTALL_RUNTIME_DEPENDENCIES)
+    list(APPEND PRE_EXCLUDE_REGEXES "api-ms-.*")
+    list(APPEND PRE_EXCLUDE_REGEXES "ext-ms-.*")
+    install(
+      RUNTIME_DEPENDENCY_SET
+      dependencies
+      DESTINATION
+      ${CMAKE_INSTALL_BINDIR}
+      PRE_EXCLUDE_REGEXES
+      ${PRE_EXCLUDE_REGEXES}
+      POST_EXCLUDE_REGEXES
+      ".*system32/.*\\.dll"
+      DIRECTORIES
+      $<TARGET_FILE_DIR:Basix::basix>
+    )
+  endif()
+else()
+  install(
+    TARGETS dolfinx
+    EXPORT DOLFINXTargets
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT RuntimeExecutables
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT RuntimeLibraries
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Development
+  )
+endif()
 
 # Generate DOLFINTargets.cmake
 install(EXPORT DOLFINXTargets DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/dolfinx)

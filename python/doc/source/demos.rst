@@ -26,12 +26,17 @@ PDEs (advanced)
 .. toctree::
    :maxdepth: 1
 
+   demos/demo_mixed-poisson.md
    demos/demo_stokes.md
-   demos/demo_navier_stokes.md
+   demos/demo_navier-stokes.md
    demos/demo_elasticity.md
    demos/demo_cahn-hilliard.md
    demos/demo_static-condensation.md
+   demos/demo_biharmonic.md
    demos/demo_types.md
+   demos/demo_poisson_matrix_free.md
+   demos/demo_pyamg.md
+   demos/demo_hdg.md
 
 
 Nonlinear problems
@@ -89,6 +94,7 @@ List of all demos
    :maxdepth: 1
 
    demos/demo_poisson.md
+   demos/demo_biharmonic.md
    demos/demo_cahn-hilliard.md
    demos/demo_stokes.md
    demos/demo_elasticity.md
@@ -104,5 +110,7 @@ List of all demos
    demos/demo_pml.md
    demos/demo_half_loaded_waveguide.md
    demos/demo_axis.md
-   demos/demo_navier_stokes.md
-
+   demos/demo_navier-stokes.md
+   demos/demo_mixed-poisson.md
+   demos/demo_pyamg.md
+   demos/demo_hdg.md

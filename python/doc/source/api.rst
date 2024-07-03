@@ -17,16 +17,16 @@ Public user interface
    dolfinx.geometry
    dolfinx.graph
    dolfinx.io
+   dolfinx.io.gmshio
    dolfinx.jit
    dolfinx.la
    dolfinx.mesh
-   dolfinx.nls
    dolfinx.nls.petsc
    dolfinx.pkgconfig
    dolfinx.plot
 
 
-pybind11/C++interface
+nanobind/C++interface
 ^^^^^^^^^^^^^^^^^^^^^
 
 These are low-level interfaces to the C++ component of DOLFINx. These

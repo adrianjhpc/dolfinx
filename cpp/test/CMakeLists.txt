@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(dolfinx-tests)
 
 project(${PROJECT_NAME} LANGUAGES C CXX)
+set(CMAKE_C_STANDARD 17) # For FFCx generated .c files.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -11,43 +12,60 @@ find_package(DOLFINX REQUIRED)
 
 add_custom_command(
   OUTPUT poisson.c
-  COMMAND ffcx ${CMAKE_CURRENT_SOURCE_DIR}/poisson.py -o
-          ${CMAKE_CURRENT_SOURCE_DIR}
+  COMMAND ffcx ${CMAKE_CURRENT_SOURCE_DIR}/poisson.py
   VERBATIM
   DEPENDS poisson.py
   COMMENT "Compile poisson.py using FFCx"
 )
 
-# Make test executable
-set(TEST_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/poisson.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/vector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/matrix.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/io.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/common/sub_systems_manager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/common/index_map.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/common/sort.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/mesh/distributed_mesh.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/common/CIFailure.cpp
-)
+find_package(Catch2 3)
 
-find_package(Catch2 2)
 if(NOT Catch2_FOUND)
   message(STATUS "Catch2 not found. Downloading.")
   include(FetchContent)
   FetchContent_Declare(
     Catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v2.13.8
+    GIT_TAG v3.4.0
   )
   FetchContent_MakeAvailable(Catch2)
 endif()
 
-add_executable(unittests ${TEST_SOURCES})
-target_link_libraries(unittests PRIVATE Catch2::Catch2 dolfinx)
+add_executable(
+  unittests
+  main.cpp
+  vector.cpp
+  matrix.cpp
+  io.cpp
+  common/sub_systems_manager.cpp
+  common/index_map.cpp
+  common/sort.cpp
+  mesh/distributed_mesh.cpp
+  common/CIFailure.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/poisson.c
+)
+target_link_libraries(unittests PRIVATE Catch2::Catch2WithMain dolfinx)
+# UUID requires bcrypt to be linked on Windows, broken in vcpkg.
+# https://github.com/microsoft/vcpkg/issues/4481
+if(WIN32)
+  target_link_libraries(unittests PRIVATE bcrypt)
+endif()
+target_include_directories(
+  unittests PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+)
+
+# Add some strict compiler checks only on C++ part (Developer).
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-Wall -Werror -Wextra -pedantic" HAVE_PEDANTIC)
+
+if(HAVE_PEDANTIC)
+  list(APPEND DOLFINX_CXX_DEVELOPER_FLAGS -Wall;-Werror;-Wextra;-pedantic)
+endif()
+
 target_compile_options(
-  unittests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Werror -Wextra -pedantic>
+  unittests
+  PRIVATE
+    $<$<AND:$<CONFIG:Developer>,$<COMPILE_LANGUAGE:CXX>>:${DOLFINX_CXX_DEVELOPER_FLAGS}>
 )
 
 # Enable testing

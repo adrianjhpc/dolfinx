@@ -13,8 +13,7 @@
 # This demo is implemented in {download}`demo_poisson.py`. It
 # illustrates how to:
 #
-# - Define a {py:class}`FunctionSpace <dolfinx.fem.FunctionSpace>`
-# - Define a {py:class}`FunctionSpace <dolfinx.fem.FunctionSpace>`
+# - Create a {py:class}`function space <dolfinx.fem.FunctionSpace>`
 # - Solve a linear partial differential equation
 #
 # ## Equation and problem definition
@@ -25,9 +24,9 @@
 #
 # $$
 # \begin{align}
-# - \nabla^{2} u &= f \quad {\rm in} \ \Omega, \\
-# u &= 0 \quad {\rm on} \ \Gamma_{D}, \\
-# \nabla u \cdot n &= g \quad {\rm on} \ \Gamma_{N}. \\
+#   - \nabla^{2} u &= f \quad {\rm in} \ \Omega, \\
+#   u &= 0 \quad {\rm on} \ \Gamma_{D}, \\
+#   \nabla u \cdot n &= g \quad {\rm on} \ \Gamma_{N}. \\
 # \end{align}
 # $$
 #
@@ -43,8 +42,8 @@
 #
 # $$
 # \begin{align}
-# a(u, v) &:= \int_{\Omega} \nabla u \cdot \nabla v \, {\rm d} x, \\
-# L(v)    &:= \int_{\Omega} f v \, {\rm d} x + \int_{\Gamma_{N}} g v \, {\rm d} s.
+#   a(u, v) &:= \int_{\Omega} \nabla u \cdot \nabla v \, {\rm d} x, \\
+#   L(v)    &:= \int_{\Omega} f v \, {\rm d} x + \int_{\Gamma_{N}} g v \, {\rm d} s.
 # \end{align}
 # $$
 #
@@ -56,7 +55,7 @@
 # In this demo we consider:
 #
 # - $\Omega = [0,2] \times [0,1]$ (a rectangle)
-# - $\Gamma_{D} = \{(0, y) \cup (1, y) \subset \partial \Omega\}$
+# - $\Gamma_{D} = \{(0, y) \cup (2, y) \subset \partial \Omega\}$
 # - $\Gamma_{N} = \{(x, 0) \cup (x, 1) \subset \partial \Omega\}$
 # - $g = \sin(5x)$
 # - $f = 10\exp(-((x - 0.5)^2 + (y - 0.5)^2) / 0.02)$
@@ -65,32 +64,51 @@
 #
 # The modules that will be used are imported:
 
+import importlib.util
+
+if importlib.util.find_spec("petsc4py") is not None:
+    import dolfinx
+
+    if not dolfinx.has_petsc:
+        print("This demo requires DOLFINx to be compiled with PETSc enabled.")
+        exit(0)
+    from petsc4py.PETSc import ScalarType  # type: ignore
+else:
+    print("This demo requires petsc4py.")
+    exit(0)
+
+from mpi4py import MPI
+
 # +
 import numpy as np
 
 import ufl
 from dolfinx import fem, io, mesh, plot
+from dolfinx.fem.petsc import LinearProblem
 from ufl import ds, dx, grad, inner
 
-from mpi4py import MPI
-from petsc4py.PETSc import ScalarType
-
 # -
+
+# Note that it is important to first `from mpi4py import MPI` to
+# ensure that MPI is correctly initialised.
 
 # We create a rectangular {py:class}`Mesh <dolfinx.mesh.Mesh>` using
 # {py:func}`create_rectangle <dolfinx.mesh.create_rectangle>`, and
-# create a finite element {py:class}`FunctionSpace
+# create a finite element {py:class}`function space
 # <dolfinx.fem.FunctionSpace>` $V$ on the mesh.
 
 # +
-msh = mesh.create_rectangle(comm=MPI.COMM_WORLD,
-                            points=((0.0, 0.0), (2.0, 1.0)), n=(32, 16),
-                            cell_type=mesh.CellType.triangle,)
-V = fem.FunctionSpace(msh, ("Lagrange", 1))
+msh = mesh.create_rectangle(
+    comm=MPI.COMM_WORLD,
+    points=((0.0, 0.0), (2.0, 1.0)),
+    n=(32, 16),
+    cell_type=mesh.CellType.triangle,
+)
+V = fem.functionspace(msh, ("Lagrange", 1))
 # -
 
-# The second argument to {py:class}`FunctionSpace
-# <dolfinx.fem.FunctionSpace>` is a tuple `(family, degree)`, where
+# The second argument to {py:func}`functionspace
+# <dolfinx.fem.functionspace>` is a tuple `(family, degree)`, where
 # `family` is the finite element family, and `degree` specifies the
 # polynomial degree. In this case `V` is a space of continuous Lagrange
 # finite elements of degree 1.
@@ -102,9 +120,11 @@ V = fem.FunctionSpace(msh, ("Lagrange", 1))
 # with a 'marker' function that returns `True` for points `x` on the
 # boundary and `False` otherwise.
 
-facets = mesh.locate_entities_boundary(msh, dim=(msh.topology.dim - 1),
-                                       marker=lambda x: np.logical_or(np.isclose(x[0], 0.0),
-                                                                      np.isclose(x[0], 2.0)))
+facets = mesh.locate_entities_boundary(
+    msh,
+    dim=(msh.topology.dim - 1),
+    marker=lambda x: np.isclose(x[0], 0.0) | np.isclose(x[0], 2.0),
+)
 
 # We now find the degrees-of-freedom that are associated with the
 # boundary facets using {py:func}`locate_dofs_topological
@@ -113,8 +133,8 @@ facets = mesh.locate_entities_boundary(msh, dim=(msh.topology.dim - 1),
 dofs = fem.locate_dofs_topological(V=V, entity_dim=1, entities=facets)
 
 # and use {py:func}`dirichletbc <dolfinx.fem.dirichletbc>` to create a
-# {py:class}`DirichletBCMetaClass <dolfinx.fem.DirichletBCMetaClass>`
-# class that represents the boundary condition:
+# {py:class}`DirichletBC <dolfinx.fem.DirichletBC>` class that
+# represents the boundary condition:
 
 bc = fem.dirichletbc(value=ScalarType(0), dofs=dofs, V=V)
 
@@ -130,14 +150,14 @@ a = inner(grad(u), grad(v)) * dx
 L = inner(f, v) * dx + inner(g, v) * ds
 # -
 
-# A {py:class}`LinearProblem <dolfinx.fem.LinearProblem>` object is
+# A {py:class}`LinearProblem <dolfinx.fem.petsc.LinearProblem>` object is
 # created that brings together the variational problem, the Dirichlet
 # boundary condition, and which specifies the linear solver. In this
-# case an LU solver us sued. The {py:func}`solve
-# <dolfinx.fem.LinearProblem.solve>` computes the solution.
+# case an LU solver is used. The {py:func}`solve
+# <dolfinx.fem.petsc.LinearProblem.solve>` computes the solution.
 
 # +
-problem = fem.petsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
+problem = LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
 uh = problem.solve()
 # -
 
@@ -155,7 +175,8 @@ with io.XDMFFile(msh.comm, "out_poisson/poisson.xdmf", "w") as file:
 # +
 try:
     import pyvista
-    cells, types, x = plot.create_vtk_mesh(V)
+
+    cells, types, x = plot.vtk_mesh(V)
     grid = pyvista.UnstructuredGrid(cells, types, x)
     grid.point_data["u"] = uh.x.array.real
     grid.set_active_scalars("u")
@@ -168,7 +189,6 @@ try:
         plotter.screenshot("uh_poisson.png")
     else:
         plotter.show()
-
 except ModuleNotFoundError:
     print("'pyvista' is required to visualise the solution")
     print("Install 'pyvista' with pip: 'python3 -m pip install pyvista'")

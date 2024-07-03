@@ -7,10 +7,7 @@
 #include "HDF5Interface.h"
 #include <filesystem>
 
-#define HDF5_MAXSTRLEN 80
-
 using namespace dolfinx;
-using namespace dolfinx::io;
 
 namespace
 {
@@ -18,7 +15,7 @@ namespace
 /// @param[in] handle HDF5 file handle
 /// @param[in] group_name Name of the group to check
 /// @return True if @p group_name is in the file
-bool has_group(const hid_t handle, const std::string& group_name)
+bool has_group(hid_t handle, const std::string& group_name)
 {
   const hid_t lapl_id = H5Pcreate(H5P_LINK_ACCESS);
   if (lapl_id < 0)
@@ -55,14 +52,12 @@ bool has_group(const hid_t handle, const std::string& group_name)
 } // namespace
 
 //-----------------------------------------------------------------------------
-hid_t HDF5Interface::open_file(MPI_Comm comm,
-                               const std::filesystem::path& filename,
-                               const std::string& mode, const bool use_mpi_io)
+hid_t io::hdf5::open_file(MPI_Comm comm, const std::filesystem::path& filename,
+                          const std::string& mode, bool use_mpi_io)
 {
   // Set parallel access with communicator
   const hid_t plist_id = H5Pcreate(H5P_FILE_ACCESS);
 
-#ifdef H5_HAVE_PARALLEL
   if (use_mpi_io)
   {
     MPI_Info info;
@@ -71,27 +66,27 @@ hid_t HDF5Interface::open_file(MPI_Comm comm,
       throw std::runtime_error("Call to H5Pset_fapl_mpio unsuccessful");
     MPI_Info_free(&info);
   }
-#endif
 
   hid_t file_id = -1;
   if (mode == "w") // Create file for write, overwriting any existing file
   {
     if (auto d = filename.parent_path(); !d.empty())
       std::filesystem::create_directories(d);
-    file_id = H5Fcreate(filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
+    file_id = H5Fcreate(filename.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT,
+                        plist_id);
     if (file_id < 0)
       throw std::runtime_error("Failed to create HDF5 file.");
   }
   else if (mode == "a") // Open file to append, creating if does not exist
   {
     if (std::filesystem::exists(filename))
-      file_id = H5Fopen(filename.c_str(), H5F_ACC_RDWR, plist_id);
+      file_id = H5Fopen(filename.string().c_str(), H5F_ACC_RDWR, plist_id);
     else
     {
       if (auto d = filename.parent_path(); !d.empty())
         std::filesystem::create_directories(d);
-      file_id
-          = H5Fcreate(filename.c_str(), H5F_ACC_EXCL, H5P_DEFAULT, plist_id);
+      file_id = H5Fcreate(filename.string().c_str(), H5F_ACC_EXCL, H5P_DEFAULT,
+                          plist_id);
     }
 
     if (file_id < 0)
@@ -104,14 +99,14 @@ hid_t HDF5Interface::open_file(MPI_Comm comm,
   {
     if (std::filesystem::exists(filename))
     {
-      file_id = H5Fopen(filename.c_str(), H5F_ACC_RDONLY, plist_id);
+      file_id = H5Fopen(filename.string().c_str(), H5F_ACC_RDONLY, plist_id);
       if (file_id < 0)
         throw std::runtime_error("Failed to open HDF5 file.");
     }
     else
     {
       throw std::runtime_error("Unable to open HDF5 file. File "
-                               + filename.native() + " does not exist.");
+                               + filename.string() + " does not exist.");
     }
   }
 
@@ -121,19 +116,19 @@ hid_t HDF5Interface::open_file(MPI_Comm comm,
   return file_id;
 }
 //-----------------------------------------------------------------------------
-void HDF5Interface::close_file(const hid_t handle)
+void io::hdf5::close_file(hid_t handle)
 {
   if (H5Fclose(handle) < 0)
     throw std::runtime_error("Failed to close HDF5 file.");
 }
 //-----------------------------------------------------------------------------
-void HDF5Interface::flush_file(const hid_t handle)
+void io::hdf5::flush_file(hid_t handle)
 {
   if (H5Fflush(handle, H5F_SCOPE_GLOBAL) < 0)
     throw std::runtime_error("Failed to flush HDF5 file.");
 }
 //-----------------------------------------------------------------------------
-std::filesystem::path HDF5Interface::get_filename(hid_t handle)
+std::filesystem::path io::hdf5::get_filename(hid_t handle)
 {
   // Get length of filename
   const ssize_t length = H5Fget_name(handle, nullptr, 0);
@@ -150,8 +145,7 @@ std::filesystem::path HDF5Interface::get_filename(hid_t handle)
   return std::filesystem::path(name.begin(), name.end());
 }
 //-----------------------------------------------------------------------------
-bool HDF5Interface::has_dataset(const hid_t handle,
-                                const std::string& dataset_path)
+bool io::hdf5::has_dataset(hid_t handle, const std::string& dataset_path)
 {
   const hid_t lapl_id = H5Pcreate(H5P_LINK_ACCESS);
   if (lapl_id < 0)
@@ -167,7 +161,12 @@ bool HDF5Interface::has_dataset(const hid_t handle,
   return link_status;
 }
 //-----------------------------------------------------------------------------
-void HDF5Interface::add_group(const hid_t handle, const std::string& group_name)
+hid_t io::hdf5::open_dataset(hid_t handle, const std::string& path)
+{
+  return H5Dopen2(handle, path.c_str(), H5P_DEFAULT);
+}
+//-----------------------------------------------------------------------------
+void io::hdf5::add_group(hid_t handle, const std::string& group_name)
 {
   std::string _group_name(group_name);
 
@@ -200,8 +199,7 @@ void HDF5Interface::add_group(const hid_t handle, const std::string& group_name)
 }
 //-----------------------------------------------------------------------------
 std::vector<std::int64_t>
-HDF5Interface::get_dataset_shape(const hid_t handle,
-                                 const std::string& dataset_path)
+io::hdf5::get_dataset_shape(hid_t handle, const std::string& dataset_path)
 {
   // Open named dataset
   const hid_t dset_id = H5Dopen2(handle, dataset_path.c_str(), H5P_DEFAULT);
@@ -233,21 +231,18 @@ HDF5Interface::get_dataset_shape(const hid_t handle,
   return std::vector<std::int64_t>(size.begin(), size.end());
 }
 //-----------------------------------------------------------------------------
-void HDF5Interface::set_mpi_atomicity(const hid_t handle, const bool atomic)
+void io::hdf5::set_mpi_atomicity(hid_t handle, bool atomic)
 {
-#ifdef H5_HAVE_PARALLEL
   if (H5Fset_mpi_atomicity(handle, atomic) < 0)
     throw std::runtime_error("Setting the MPI atomicity flag failed");
-#endif
 }
 //-----------------------------------------------------------------------------
-bool HDF5Interface::get_mpi_atomicity(const hid_t handle)
+bool io::hdf5::get_mpi_atomicity(hid_t handle)
 {
   hbool_t atomic = false;
-#ifdef H5_HAVE_PARALLEL
   if (H5Fget_mpi_atomicity(handle, &atomic) < 0)
     throw std::runtime_error("Getting the MPI atomicity flag failed");
-#endif
-  return static_cast<bool>(atomic);
+  else
+    return static_cast<bool>(atomic);
 }
 //-----------------------------------------------------------------------------
